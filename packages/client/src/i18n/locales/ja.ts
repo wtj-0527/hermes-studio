@@ -680,6 +680,10 @@ export default {
     promptPlaceholder: '実行するプロンプト',
     skills: 'スキル',
     skillsPlaceholder: 'スキルを選択...',
+    provider: 'Provider',
+    model: 'Model',
+    defaultProvider: 'Default provider',
+    defaultModel: 'Default model',
     deliverTarget: '配信先',
     origin: '配信元',
     local: 'ローカル',
@@ -704,6 +708,7 @@ export default {
     },
     info: {
       model: 'モデル',
+      provider: 'Provider',
       schedule: 'スケジュール',
       lastRun: '前回実行',
       nextRun: '次回実行',

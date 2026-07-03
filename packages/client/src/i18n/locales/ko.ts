@@ -680,6 +680,10 @@ export default {
     promptPlaceholder: '실행할 프롬프트',
     skills: '스킬',
     skillsPlaceholder: '스킬 선택...',
+    provider: 'Provider',
+    model: 'Model',
+    defaultProvider: 'Default provider',
+    defaultModel: 'Default model',
     deliverTarget: '전송 대상',
     origin: '출처',
     local: '로컬',
@@ -704,6 +708,7 @@ export default {
     },
     info: {
       model: '모델',
+      provider: 'Provider',
       schedule: '일정',
       lastRun: '마지막 실행',
       nextRun: '다음 실행',

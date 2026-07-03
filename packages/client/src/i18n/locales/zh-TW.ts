@@ -936,6 +936,10 @@ export default {
     promptPlaceholder: '要執行的內容',
     skills: '技能',
     skillsPlaceholder: '選擇技能...',
+    provider: 'Provider',
+    model: '模型',
+    defaultProvider: 'Default provider',
+    defaultModel: 'Default model',
     deliverTarget: '投遞目標',
     origin: '來源',
     local: '本地',
@@ -960,6 +964,7 @@ export default {
     },
     info: {
       model: '模型',
+      provider: '服务商',
       schedule: '排程',
       lastRun: '上次執行',
       nextRun: '下次執行',

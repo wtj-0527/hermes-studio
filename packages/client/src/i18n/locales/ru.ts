@@ -841,6 +841,10 @@ export default {
     promptPlaceholder: 'Содержимое для выполнения',
     skills: 'Навыки',
     skillsPlaceholder: 'Выберите навыки...',
+    provider: 'Provider',
+    model: 'Model',
+    defaultProvider: 'Default provider',
+    defaultModel: 'Default model',
     deliverTarget: 'Цель доставки',
     origin: 'Источник',
     local: 'Локально',
@@ -865,6 +869,7 @@ export default {
     },
     info: {
       model: 'Модель',
+      provider: 'Provider',
       schedule: 'Расписание',
       lastRun: 'Последний запуск',
       nextRun: 'Следующий запуск',
