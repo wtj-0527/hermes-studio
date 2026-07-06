@@ -1,7 +1,7 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { archiveSession as archiveSessionApi, deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, fetchWorkspaceRunChangeFile, fetchWorkspaceRunChangesForSession, setSessionModel, type HermesMessage, type SessionSummary, type WorkspaceRunChangeFileDetail, type WorkspaceRunChangeSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName } from '@/api/client'
-import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
+import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
 import type { ProviderApiMode } from '@/api/hermes/system'
 import { defineStore } from 'pinia'
@@ -21,6 +21,21 @@ export type ContentBlock = ContentBlockImport
 export const LIVE_CHAT_MESSAGE_PAGE_SIZE = 150
 export const LIVE_CHAT_MAX_LOADED_MESSAGES = 300
 const WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX = 'workspace-run-change:'
+type ChatAgentId = 'hermes' | 'claude' | 'codex' | 'ekko-agent'
+
+function agentToCodingAgentId(agent?: string): ChatCodingAgentId | undefined {
+  if (agent === 'codex') return 'codex'
+  if (agent === 'claude') return 'claude-code'
+  if (agent === 'ekko-agent') return 'ekko-agent'
+  return undefined
+}
+
+function codingAgentIdToAgent(id?: ChatCodingAgentId): ChatAgentId | undefined {
+  if (id === 'codex') return 'codex'
+  if (id === 'claude-code') return 'claude'
+  if (id === 'ekko-agent') return 'ekko-agent'
+  return undefined
+}
 
 function moaReferenceLabel(evt: RunEvent): string {
   const label = typeof evt.label === 'string' && evt.label.trim()
@@ -98,7 +113,7 @@ export interface Session {
   agent?: string
   agentSessionId?: string
   agentNativeSessionId?: string
-  codingAgentId?: 'claude-code' | 'codex'
+  codingAgentId?: ChatCodingAgentId
   codingAgentMode?: 'global' | 'scoped'
   messages: Message[]
   createdAt: number
@@ -249,6 +264,14 @@ function hasRuntimeToolPayload(value: unknown): boolean {
 
 function runtimeToolPayloadOrUndefined(value: unknown): unknown | undefined {
   return hasRuntimeToolPayload(value) ? value : undefined
+}
+
+function runtimeToolOutputFromEvent(event: unknown): unknown | undefined {
+  if (!event || typeof event !== 'object') return undefined
+  const record = event as Record<string, unknown>
+  return runtimeToolPayloadOrUndefined(
+    record.output ?? record.result ?? record.content ?? record.preview,
+  )
 }
 
 function runtimePayloadText(value: unknown): string {
@@ -461,7 +484,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
         toolArgs,
         toolPreview: typeof preview === 'string' ? preview.slice(0, 100) || undefined : undefined,
         toolResult: moaPayload ? runtimeToolPayloadOrUndefined(moaPayload.result) : runtimeToolPayloadOrUndefined((msg as any).content),
-        toolStatus: 'done',
+        toolStatus: readFinishReason(msg) === 'error' ? 'error' : 'done',
         finishReason: readFinishReason(msg),
         runMarker: readRunMarker(msg),
       })
@@ -516,8 +539,8 @@ function lastVisibleMessageRole(messages?: Message[] | null): string | null {
 }
 
 function mapHermesSession(s: SessionSummary): Session {
-  const isCodingAgentSession = s.source === 'coding_agent' || s.agent === 'claude' || s.agent === 'codex'
-  const codingAgentId = s.agent === 'codex' ? 'codex' : s.agent === 'claude' ? 'claude-code' : undefined
+  const codingAgentId = agentToCodingAgentId(s.agent)
+  const isCodingAgentSession = s.source === 'coding_agent' || Boolean(codingAgentId)
   const codingAgentMode = isCodingAgentSession
     ? (s.agent_mode === 'global' || s.agent_mode === 'scoped'
         ? s.agent_mode
@@ -539,6 +562,7 @@ function mapHermesSession(s: SessionSummary): Session {
     updatedAt: Math.round(activitySeconds * 1000),
     model: s.model,
     provider: s.provider || (s as any).billing_provider || '',
+    apiMode: s.api_mode,
     messageCount: s.message_count,
     messageTotal: s.message_count,
     loadedMessageCount: 0,
@@ -582,16 +606,18 @@ function legacyStorageKey(): string | null { return activeRuntimeMode === 'defau
 
 function isCodingAgentLikeSession(session?: Pick<Session, 'source' | 'agent' | 'codingAgentId'> | null): boolean {
   return session?.source === 'coding_agent' ||
-    session?.codingAgentId === 'claude-code' ||
-    session?.codingAgentId === 'codex' ||
-    session?.agent === 'claude' ||
-    session?.agent === 'codex'
+    Boolean(session?.codingAgentId) ||
+    Boolean(agentToCodingAgentId(session?.agent))
 }
 
 function clearCodingAgentRuntimeCredentials(session?: Session | null) {
   if (!session || !isCodingAgentLikeSession(session)) return
   session.baseUrl = undefined
   session.apiKey = undefined
+}
+
+function shouldPreserveRuntimeApiMode(session?: Session | null): boolean {
+  return isCodingAgentLikeSession(session) && session?.codingAgentMode !== 'global'
 }
 
 function isQuotaExceededError(error: unknown): boolean {
@@ -961,6 +987,7 @@ export const useChatStore = defineStore('chat', () => {
         ...mapped,
         messages: existing.messages,
         contextTokens: existing.contextTokens,
+        apiMode: mapped.apiMode || existing.apiMode,
         loadedMessageCount: existing.loadedMessageCount,
         hasMoreBefore: existing.hasMoreBefore,
       })
@@ -980,11 +1007,13 @@ export const useChatStore = defineStore('chat', () => {
       const runtimeByIdBefore = new Map(sessions.value.map(s => [s.id, {
         messages: s.messages,
         contextTokens: s.contextTokens,
+        apiMode: s.apiMode,
       }]))
       for (const s of fresh) {
         const prev = runtimeByIdBefore.get(s.id)
         if (prev?.messages?.length) s.messages = prev.messages
         if (prev?.contextTokens != null) s.contextTokens = prev.contextTokens
+        if (!s.apiMode && prev?.apiMode) s.apiMode = prev.apiMode
       }
       sessions.value = fresh
       pruneCompletedUnreadSessions(new Set(sessions.value.map(s => s.id)))
@@ -1052,6 +1081,7 @@ export const useChatStore = defineStore('chat', () => {
           existing.endedAt = fresh.endedAt
           existing.model = fresh.model
           existing.provider = fresh.provider
+          existing.apiMode = fresh.apiMode || existing.apiMode
           existing.messageCount = fresh.messageCount
           existing.inputTokens = fresh.inputTokens
           existing.outputTokens = fresh.outputTokens
@@ -1128,8 +1158,8 @@ export const useChatStore = defineStore('chat', () => {
     model?: string
     provider?: string
     source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
-    agent?: 'hermes' | 'claude' | 'codex'
-    codingAgentId?: 'claude-code' | 'codex'
+    agent?: ChatAgentId
+    codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
@@ -1137,14 +1167,14 @@ export const useChatStore = defineStore('chat', () => {
     apiMode?: ProviderApiMode
   } = {}): Session {
     const source = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
-    const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
     const codingAgentMode = codingAgentId ? (options.codingAgentMode || 'scoped') : undefined
     const session: Session = {
       id: uid(),
       profile: options.profile || useProfilesStore().activeProfileName || 'default',
       title: '',
       source,
-      agent: options.agent || (codingAgentId ? (codingAgentId === 'codex' ? 'codex' : 'claude') : 'hermes'),
+      agent: options.agent || codingAgentIdToAgent(codingAgentId) || 'hermes',
       codingAgentId,
       codingAgentMode,
       messages: [],
@@ -1332,16 +1362,16 @@ export const useChatStore = defineStore('chat', () => {
                     toolStatus: 'running',
                   })
                 }
-              } else if (e.event === 'tool.completed') {
+              } else if (e.event === 'tool.completed' || e.event === 'tool.failed') {
                 const msgs = getSessionMsgs(sessionId)
                 const toolCallId = e.tool_call_id as string | undefined
                 const toolMsgs = toolCallId
                   ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
                   : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
                 if (toolMsgs.length > 0) {
-                  const output = runtimeToolPayloadOrUndefined((e as any).output)
+                  const output = runtimeToolOutputFromEvent(e)
                   updateMessage(sessionId, toolMsgs[toolMsgs.length - 1].id, {
-                    toolStatus: e.error === true || runtimeToolOutputHasError(output) ? 'error' : 'done',
+                    toolStatus: e.event === 'tool.failed' || e.error === true || runtimeToolOutputHasError(output) ? 'error' : 'done',
                     toolDuration: e.duration,
                     toolResult: output,
                   })
@@ -1408,8 +1438,8 @@ export const useChatStore = defineStore('chat', () => {
     model?: string
     provider?: string
     source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
-    agent?: 'hermes' | 'claude' | 'codex'
-    codingAgentId?: 'claude-code' | 'codex'
+    agent?: ChatAgentId
+    codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
@@ -1418,7 +1448,7 @@ export const useChatStore = defineStore('chat', () => {
   } = {}): Session {
     const appStore = useAppStore()
     const storageSource = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
-    const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
     const isGlobalCodingAgent = Boolean(codingAgentId) && options.codingAgentMode === 'global'
     const session = createSession({
       profile: options.profile,
@@ -1447,18 +1477,22 @@ export const useChatStore = defineStore('chat', () => {
     const shouldClearRuntimeCredentials = previousProvider !== nextProvider && (
       isCodingAgentLikeSession(target) || isCodingAgentLikeSession(activeTarget)
     )
-    const ok = await setSessionModel(targetId, modelId, provider || '', apiMode)
+    const preservedApiMode = apiMode || (previousProvider === nextProvider
+      ? (shouldPreserveRuntimeApiMode(target) ? target?.apiMode : undefined) ||
+        (shouldPreserveRuntimeApiMode(activeTarget) ? activeTarget?.apiMode : undefined)
+      : undefined)
+    const ok = await setSessionModel(targetId, modelId, provider || '', preservedApiMode)
     if (!ok) return false
     if (target) {
       target.model = modelId
       target.provider = provider || ''
-      if (apiMode) target.apiMode = apiMode
+      target.apiMode = preservedApiMode
       if (shouldClearRuntimeCredentials) clearCodingAgentRuntimeCredentials(target)
     }
     if (activeTarget) {
       activeTarget.model = modelId
       activeTarget.provider = provider || ''
-      if (apiMode) activeTarget.apiMode = apiMode
+      activeTarget.apiMode = preservedApiMode
       if (shouldClearRuntimeCredentials) clearCodingAgentRuntimeCredentials(activeTarget)
     }
     return true
@@ -2180,12 +2214,15 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function completionNotificationAgent(session: Session): { icon: string } {
-    const codingAgentId = session.codingAgentId || (session.agent === 'codex' ? 'codex' : session.agent === 'claude' ? 'claude-code' : undefined)
+    const codingAgentId = session.codingAgentId || agentToCodingAgentId(session.agent)
     if (codingAgentId === 'codex') {
       return { icon: '/coding-agents/codex-openai.png' }
     }
     if (codingAgentId === 'claude-code') {
       return { icon: '/coding-agents/claude-code.svg' }
+    }
+    if (codingAgentId === 'ekko-agent') {
+      return { icon: '/coding-agents/ekko-agent.png' }
     }
     return { icon: '/coding-agents/hermes.png' }
   }
@@ -2331,11 +2368,12 @@ export const useChatStore = defineStore('chat', () => {
             ? 'api_server'
             : 'cli'
       const isCodingAgentExecution = sessionSource === 'coding_agent' || (sessionSource === 'workflow' && isCodingAgentSession)
-      const codingAgentId: 'claude-code' | 'codex' =
+      const codingAgentId: ChatCodingAgentId =
         activeSession.value?.codingAgentId ||
-        (activeSession.value?.agent === 'codex' ? 'codex' : 'claude-code')
+        agentToCodingAgentId(activeSession.value?.agent) ||
+        'claude-code'
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
-      const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
+      const codingAgentApiMode = isCodingAgentExecution && codingAgentId !== 'ekko-agent' && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(
             activeSession.value?.apiMode || providerGroup?.api_mode,
             inferCodingAgentApiMode(
@@ -2372,9 +2410,13 @@ export const useChatStore = defineStore('chat', () => {
               apiMode: codingAgentApiMode,
             }
           : {}),
-        // Per-session reasoning effort override. Coding Agent runners do not
-        // consume this setting yet, so keep their payloads explicit.
-        reasoning_effort: isCodingAgentExecution ? undefined : activeSession.value?.reasoningEffort || undefined,
+        // Per-session reasoning effort override. Hermes bridge and scoped coding
+        // agents both consume this when the selected provider/API supports it.
+        // Global coding-agent mode uses the user's native CLI config, so avoid
+        // injecting a per-session override there.
+        reasoning_effort: isCodingAgentExecution && codingAgentMode === 'global'
+          ? undefined
+          : activeSession.value?.reasoningEffort || undefined,
       }
       if (shouldSendInitialSessionConfig && activeSession.value) {
         activeSession.value.messageCount = Math.max(activeSession.value.messageCount || 0, 1)
@@ -2804,7 +2846,8 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
-            case 'tool.completed': {
+            case 'tool.completed':
+            case 'tool.failed': {
               runHadToolActivity = true
               const msgs = getSessionMsgs(sid)
               const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -2813,8 +2856,8 @@ export const useChatStore = defineStore('chat', () => {
                 : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
               if (toolMsgs.length > 0) {
                 const last = toolMsgs[toolMsgs.length - 1]
-                const output = runtimeToolPayloadOrUndefined((evt as any).output)
-                const hasError = (evt as any).error === true || runtimeToolOutputHasError(output)
+                const output = runtimeToolOutputFromEvent(evt)
+                const hasError = evt.event === 'tool.failed' || (evt as any).error === true || runtimeToolOutputHasError(output)
                 const duration = (evt as any).duration
                 updateMessage(sid, last.id, {
                   toolStatus: hasError ? 'error' : 'done',
@@ -3398,7 +3441,8 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
-        case 'tool.completed': {
+        case 'tool.completed':
+        case 'tool.failed': {
           runHadToolActivity = true
           const msgs = getSessionMsgs(sid)
           const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -3406,8 +3450,8 @@ export const useChatStore = defineStore('chat', () => {
             ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
             : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
           if (toolMsgs.length > 0) {
-            const output = runtimeToolPayloadOrUndefined((evt as any).output)
-            const hasError = (evt as any).error === true || runtimeToolOutputHasError(output)
+            const output = runtimeToolOutputFromEvent(evt)
+            const hasError = evt.event === 'tool.failed' || (evt as any).error === true || runtimeToolOutputHasError(output)
             updateMessage(sid, toolMsgs[toolMsgs.length - 1].id, {
               toolStatus: hasError ? 'error' : 'done',
               toolDuration: (evt as any).duration,

@@ -95,7 +95,7 @@ const visibleToolCalls = computed(() =>
 
 const emptyState = computed(() => {
   const session = chatStore.activeSession;
-  const codingAgentId = session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : undefined);
+  const codingAgentId = session?.codingAgentId || (session?.agent === "codex" ? "codex" : session?.agent === "claude" ? "claude-code" : session?.agent === "ekko-agent" ? "ekko-agent" : undefined);
   if (codingAgentId === "codex") {
     return {
       logo: "/coding-agents/codex-openai.png",
@@ -108,6 +108,13 @@ const emptyState = computed(() => {
       logo: "/coding-agents/claude-code.svg",
       alt: "Claude Code",
       text: t("chat.emptyStateAgent", { agent: "Claude Code" }),
+    };
+  }
+  if (codingAgentId === "ekko-agent") {
+    return {
+      logo: "/coding-agents/ekko-agent.png",
+      alt: "Ekko Agent",
+      text: t("chat.emptyStateAgent", { agent: "Ekko Agent" }),
     };
   }
   return {
@@ -648,7 +655,7 @@ defineExpose({
                 :title="tc.toolPreview"
               >{{ toolPreviewText(tc.toolPreview) }}</span>
               <span
-                v-if="tc.toolDuration && tc.toolStatus !== 'running'"
+                v-if="tc.toolDuration !== undefined && tc.toolStatus !== 'running'"
                 class="tool-call-duration"
                 :title="$t('chat.executionDuration')"
               >{{ formatToolDuration(tc.toolDuration) }}</span

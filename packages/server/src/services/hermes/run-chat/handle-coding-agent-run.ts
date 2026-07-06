@@ -3,11 +3,12 @@ import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manag
 import {
   sendCodingAgentRunInput,
   startCodingAgentRun,
-  type CodingAgentId,
+  type CodingAgentId as ExternalCodingAgentId,
 } from '../../coding-agents'
 import { getOrCreateSession } from './compression'
 import { contentBlocksToString } from './content-blocks'
 import type { ContentBlock, SessionState } from './types'
+import type { ChatCodingAgentId } from './types'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
@@ -19,8 +20,8 @@ export interface CodingAgentRunSocketData {
   profile?: string
   provider?: string
   model?: string
-  coding_agent_id?: CodingAgentId
-  agent_id?: CodingAgentId
+  coding_agent_id?: ChatCodingAgentId
+  agent_id?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
   source?: string
@@ -30,10 +31,11 @@ export interface CodingAgentRunSocketData {
   api_key?: string
   apiMode?: any
   api_mode?: any
+  reasoning_effort?: string
   session_source?: 'global_agent' | 'workflow'
 }
 
-function codingAgentId(data: CodingAgentRunSocketData): CodingAgentId {
+function codingAgentId(data: CodingAgentRunSocketData): ExternalCodingAgentId {
   const value = data.coding_agent_id || data.agent_id || 'claude-code'
   return value === 'codex' ? 'codex' : 'claude-code'
 }
@@ -62,11 +64,14 @@ export async function handleCodingAgentRun(
   const storedSession = getSession(sessionId)
   const launchProvider = data.provider || (mode === 'scoped' ? storedSession?.provider || undefined : undefined)
   const launchModel = data.model || (mode === 'scoped' ? storedSession?.model || undefined : undefined)
+  const launchApiMode = data.apiMode || data.api_mode || (mode === 'scoped' ? storedSession?.api_mode || undefined : undefined)
   if (runId && !codingAgentRunManager.isSessionLaunchCompatible(sessionId, {
     agentId,
     mode,
     provider: launchProvider,
     model: launchModel,
+    apiMode: launchApiMode,
+    reasoningEffort: data.reasoning_effort,
   })) {
     codingAgentRunManager.stop(sessionId, { reportClosed: false })
     runId = undefined
@@ -81,7 +86,8 @@ export async function handleCodingAgentRun(
       workspace: data.workspace,
       baseUrl: data.baseUrl || data.base_url,
       apiKey: data.apiKey || data.api_key,
-      apiMode: data.apiMode || data.api_mode,
+      apiMode: launchApiMode,
+      reasoningEffort: data.reasoning_effort,
       sessionSource: data.session_source,
     }, state)
     runId = started.agentSessionId

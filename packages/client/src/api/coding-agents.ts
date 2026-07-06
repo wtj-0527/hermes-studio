@@ -2,6 +2,7 @@ import { request } from './client'
 import type { ProviderApiMode } from './hermes/system'
 
 export type CodingAgentId = 'claude-code' | 'codex'
+export type ChatCodingAgentId = CodingAgentId | 'ekko-agent'
 export const CODING_AGENT_API_MODES = [
   'chat_completions',
   'codex_responses',
@@ -105,6 +106,7 @@ export interface CodingAgentLaunchResult {
   profile: string
   provider: string
   model: string
+  apiMode?: CodingAgentApiMode
   rootDir: string
   workspaceDir: string
   command: string

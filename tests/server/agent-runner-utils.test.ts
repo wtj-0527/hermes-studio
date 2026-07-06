@@ -285,7 +285,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('clears shared chat session run state when a print turn completes', () => {
+  it('clears shared chat session run state when a print turn completes', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -322,6 +322,7 @@ describe('coding agent run state', () => {
         },
       },
     })
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(state).toEqual(expect.objectContaining({
       isWorking: false,
@@ -432,7 +433,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('maps Codex exec JSONL assistant deltas into chat messages', () => {
+  it('maps Codex exec JSONL assistant deltas into chat messages', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -487,10 +488,63 @@ describe('coding agent run state', () => {
       content: 'I am GPT-5-Codex',
       finish_reason: 'stop',
     }))
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(state.isWorking).toBe(false)
+
     expect(emitted.map(event => event.event)).toContain('message.delta')
-    expect(emitted.map(event => event.event)).not.toContain('usage.updated')
+    expect(emitted.map(event => event.event)).toContain('usage.updated')
+    expect(emitted.find(event => event.event === 'usage.updated' && event.payload.contextTokens != null)?.payload).toEqual(expect.objectContaining({
+      contextTokens: expect.any(Number),
+    }))
     expect(emitted.find(event => event.event === 'run.completed')?.payload).not.toHaveProperty('usage')
+    const eventNames = emitted.map(event => event.event)
+    expect(eventNames.lastIndexOf('usage.updated')).toBeLessThan(eventNames.indexOf('run.completed'))
+    manager.shutdown()
+  })
+
+  it('does not reset Codex context tokens when a usage refresh has no context estimate', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [],
+      contextTokens: 15_000,
+    }
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-codex-empty-usage-${suffix}`
+    const chatSessionId = `chat-session-codex-empty-usage-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'codex',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'gpt-5-codex',
+      sessionId: chatSessionId,
+      command: 'codex',
+      args: ['--model', 'gpt-5-codex'],
+      shellCommand: 'codex --model gpt-5-codex',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+
+    await (manager as any).refreshCodingAgentUsage(run)
+
+    expect(state.contextTokens).toBe(15_000)
+    expect(emitted).toContainEqual(expect.objectContaining({
+      event: 'usage.updated',
+      payload: expect.objectContaining({ inputTokens: 0, outputTokens: 0 }),
+    }))
+    expect(emitted).not.toContainEqual(expect.objectContaining({
+      event: 'usage.updated',
+      payload: expect.objectContaining({ contextTokens: 0 }),
+    }))
     manager.shutdown()
   })
 
@@ -926,7 +980,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('waits for Codex process exit before flushing final text after tools', () => {
+  it('waits for Codex process exit before flushing final text after tools', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -1061,6 +1115,7 @@ describe('coding agent run state', () => {
     }))
     run.currentChild = undefined
     ;(manager as any).completeCodexExecTurn(run, run.codexPendingUsage)
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     const textMessages = state.messages.filter((message: any) => message.role === 'assistant' && !message.tool_calls?.length)
     expect(textMessages.map((message: any) => message.content)).toEqual([openingText, finalText])
@@ -1382,6 +1437,73 @@ describe('response stream tool detail events', () => {
         arguments: '{"command":"pwd"}',
       }),
     }))
+  })
+
+  it('emits completed tool events with duration', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+        response: { id: 'resp-1', status: 'in_progress' },
+      })
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+        item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+      })
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.230Z'))
+      const completed = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+        item: { type: 'function_call_output', call_id: 'call-1', output: 'ok' },
+      })
+
+      expect(completed).toEqual(expect.objectContaining({
+        event: 'tool.completed',
+        payload: expect.objectContaining({
+          event: 'tool.completed',
+          tool_call_id: 'call-1',
+          duration: 1.23,
+          output: 'ok',
+        }),
+      }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('emits failed tool events with duration and persisted error state', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.created', {
+        response: { id: 'resp-1', status: 'in_progress' },
+      })
+      applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.added', {
+        item: { type: 'function_call', call_id: 'call-1', name: 'Bash', arguments: '{"command":"pwd"}' },
+      })
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.500Z'))
+      const failed = applyResponseStreamEvent(state, 'session-1', 'run-1', 'response.output_item.done', {
+        item: { type: 'function_call_output', call_id: 'call-1', output: { ok: false, error: 'permission denied' } },
+      })
+
+      expect(failed).toEqual(expect.objectContaining({
+        event: 'tool.failed',
+        payload: expect.objectContaining({
+          event: 'tool.failed',
+          tool_call_id: 'call-1',
+          duration: 2.5,
+          error: 'permission denied',
+          output: '{"ok":false,"error":"permission denied"}',
+        }),
+      }))
+      expect(state.messages.find((message: any) => message.role === 'tool')).toEqual(expect.objectContaining({
+        finish_reason: 'error',
+        tool_call_id: 'call-1',
+      }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

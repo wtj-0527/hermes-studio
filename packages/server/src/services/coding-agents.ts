@@ -110,6 +110,7 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   baseUrl?: string
   apiKey?: string
   apiMode?: ApiMode
+  reasoningEffort?: string
   sessionId?: string
   agentSessionId?: string
   agentNativeSessionId?: string
@@ -123,6 +124,7 @@ export interface CodingAgentLaunchResult {
   profile: string
   provider: string
   model: string
+  apiMode?: ApiMode
   rootDir: string
   workspaceDir: string
   command: string
@@ -130,6 +132,7 @@ export interface CodingAgentLaunchResult {
   env: Record<string, string>
   shellCommand: string
   files: Array<{ key: string; path: string; absolutePath: string }>
+  reasoningEffort?: string
 }
 
 export interface CodingAgentNativeLaunchResult extends CodingAgentLaunchResult {
@@ -498,12 +501,17 @@ async function resolveStoredProviderLaunchInput(
   if (input.mode === 'global') return input
 
   const profile = String(input.profile || existingSession?.profile || 'default').trim() || 'default'
-  const provider = String(input.provider || existingSession?.provider || '').trim()
+  const inputProvider = String(input.provider || '').trim()
+  const storedProvider = String(existingSession?.provider || '').trim()
+  const provider = String(inputProvider || storedProvider).trim()
   const model = String(input.model || existingSession?.model || '').trim()
   const workspace = input.workspace || existingSession?.workspace || undefined
   let baseUrl = String(input.baseUrl || '').trim()
   let apiKey = String(input.apiKey || '').trim()
-  let apiMode = input.apiMode
+  const storedApiMode = !inputProvider || inputProvider === storedProvider
+    ? normalizeStoredLaunchApiMode(existingSession?.api_mode)
+    : undefined
+  let apiMode = input.apiMode || storedApiMode
   let canonicalProvider = provider
   const ignoredStaleProviderRuntime = belongsToDifferentBuiltinProvider(provider, baseUrl)
   if (ignoredStaleProviderRuntime) {
@@ -575,15 +583,24 @@ async function resolveStoredProviderLaunchInput(
   }
 }
 
+function normalizeStoredLaunchApiMode(value: unknown): ApiMode | undefined {
+  if (!value) return undefined
+  try {
+    return normalizeLaunchApiMode(value, 'chat_completions')
+  } catch {
+    return undefined
+  }
+}
+
 function normalizeLaunchApiMode(value: unknown, fallback: ApiMode): ApiMode {
   if (!value) return fallback
   const mode = String(value).trim() as ApiMode
-  if (!LAUNCH_API_MODES.has(mode)) {
-    const err = new Error('Invalid API protocol')
-    ;(err as any).status = 400
-    throw err
-  }
-  return mode
+  if (LAUNCH_API_MODES.has(mode)) return mode
+  if (mode === 'codex_app_server') return 'codex_responses'
+
+  const err = new Error('Invalid API protocol')
+  ;(err as any).status = 400
+  throw err
 }
 
 function storedCodingAgentMode(session: HermesSessionRow | null): 'scoped' | 'global' {
@@ -637,6 +654,8 @@ function codexCatalogEntry(input: {
     description: input.displayName,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
+      { effort: 'none', description: 'Disable provider-side reasoning when supported' },
+      { effort: 'minimal', description: 'Use the smallest provider-side reasoning budget when supported' },
       { effort: 'low', description: 'Fast responses with lighter reasoning' },
       { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
@@ -1565,6 +1584,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   const baseUrl = String(input.baseUrl || '').trim()
   const preset = PROVIDER_PRESETS.find(item => item.value === provider)
   const apiMode = normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
+  const reasoningEffort = String(input.reasoningEffort || '').trim()
   const rootDir = getScopedConfigRoot(tool.id, scope)
   const workspaceDir = resolveLaunchWorkspaceRoot(scope, input.workspace)
   await mkdir(rootDir, { recursive: true })
@@ -1590,6 +1610,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
           baseUrl,
           apiKey,
           apiMode,
+          reasoningEffort,
           agentId: tool.id,
           agentSessionId: input.agentSessionId,
           chatSessionId: input.sessionId,
@@ -1648,6 +1669,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
           baseUrl,
           apiKey,
           apiMode,
+          reasoningEffort,
           agentId: tool.id,
           agentSessionId: input.agentSessionId,
           chatSessionId: input.sessionId,
@@ -1662,6 +1684,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       `model_provider = ${JSON.stringify(providerId)}`,
       `model = ${JSON.stringify(model)}`,
       'model_reasoning_summary = "auto"',
+      ...(reasoningEffort ? [`model_reasoning_effort = ${JSON.stringify(reasoningEffort)}`] : []),
       `developer_instructions = ${tomlMultilineString(getSystemPrompt().trim())}`,
       'disable_response_storage = true',
       '',
@@ -1686,7 +1709,10 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     await writeScopedFile('auth', `${JSON.stringify({}, null, 2)}\n`)
 
     env = { CODEX_HOME: rootDir }
-    args = ['--model', model]
+    args = [
+      '--model', model,
+      ...(reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`] : []),
+    ]
   }
 
   let shellCommand = buildLaunchShellCommand({
@@ -1715,6 +1741,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     profile: scope.profile,
     provider: scope.provider,
     model,
+    apiMode,
     rootDir,
     workspaceDir,
     command: tool.command,
@@ -1722,6 +1749,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     env,
     shellCommand,
     files,
+    reasoningEffort,
   }
 }
 
@@ -1761,7 +1789,8 @@ export async function startCodingAgentRun(
     ? storedCodingAgentMode(existingSession) === requestedMode &&
       (existingSession.agent === (id === 'codex' ? 'codex' : 'claude') || !existingSession.agent) &&
       String(existingSession.provider || '').trim() === String(resolvedInput.provider || '').trim() &&
-      String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim()
+      String(existingSession.model || '').trim() === String(resolvedInput.model || '').trim() &&
+      (!String(existingSession.api_mode || '').trim() || String(existingSession.api_mode || '').trim() === String(resolvedInput.apiMode || '').trim())
     : false
   const existingNativeSessionId = canResumeNativeSession ? existingSession?.agent_native_session_id || '' : ''
   const agentNativeSessionId = resolvedInput.agentNativeSessionId || existingNativeSessionId || (id === 'claude-code' ? randomUUID() : '')
@@ -1788,6 +1817,7 @@ export async function startCodingAgentRun(
     profile: launch.profile,
     provider: persistedProvider,
     model: launch.model,
+    apiMode: launch.apiMode,
     sessionId,
     agentNativeSessionId,
     nativeResume: Boolean(existingNativeSessionId),
@@ -1797,6 +1827,7 @@ export async function startCodingAgentRun(
     workspaceDir: launch.workspaceDir,
     env: runtimeEnv,
     state,
+    reasoningEffort: launch.reasoningEffort,
     sessionSource: sessionSource === 'global_agent' || sessionSource === 'workflow' ? sessionSource : undefined,
   })
   updateSession(sessionId, {
@@ -1807,6 +1838,7 @@ export async function startCodingAgentRun(
     agent_native_session_id: agentNativeSessionId,
     model: launch.model,
     provider: persistedProvider,
+    api_mode: launch.apiMode || '',
     workspace: launch.workspaceDir,
   })
   return {

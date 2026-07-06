@@ -1,5 +1,6 @@
 import { io, type Socket } from 'socket.io-client'
 import { getBaseUrlValue, getApiKey } from '../client'
+import type { ChatCodingAgentId } from '../coding-agents'
 import type { ProviderApiMode } from './system'
 
 export type ContentBlock =
@@ -23,8 +24,8 @@ export interface StartRunRequest {
   queue_id?: string
   source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
   session_source?: 'global_agent' | 'workflow'
-  coding_agent_id?: 'claude-code' | 'codex'
-  agent_id?: 'claude-code' | 'codex'
+  coding_agent_id?: ChatCodingAgentId
+  agent_id?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   workspace?: string | null
   baseUrl?: string
@@ -33,6 +34,8 @@ export interface StartRunRequest {
   api_key?: string
   apiMode?: ProviderApiMode
   api_mode?: ProviderApiMode
+  mcpServers?: Record<string, unknown>
+  mcp_servers?: Record<string, unknown>
   /** Per-session reasoning effort override.
    * Empty/undefined = use config.yaml default. */
   reasoning_effort?: string
@@ -71,6 +74,8 @@ export interface RunEvent {
   output?: string | null
   /** Run-level workspace diff summary attached to terminal run events. */
   workspace_run_change?: unknown
+  /** Provider/runtime context returned by Ekko Agent for follow-up runs. */
+  context?: unknown
   usage?: {
     input_tokens: number
     output_tokens: number
@@ -685,6 +690,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
     chatRunSocket.on('tool.completed', globalToolCompletedHandler)
+    chatRunSocket.on('tool.failed', globalToolCompletedHandler)
     chatRunSocket.on('workspace.diff.completed', globalWorkspaceDiffCompletedHandler)
     chatRunSocket.on('subagent.start', globalSubagentEventHandler)
     chatRunSocket.on('subagent.tool', globalSubagentEventHandler)

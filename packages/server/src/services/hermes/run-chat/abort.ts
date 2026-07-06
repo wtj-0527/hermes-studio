@@ -110,6 +110,7 @@ export async function handleAbort(
       return
     }
   } else if (activeState.source === 'coding_agent') {
+    activeState.abortController?.abort()
     codingAgentRunManager.stop(sessionId, { reportClosed: false })
   } else if (activeState.abortController) {
     activeState.abortController.abort()

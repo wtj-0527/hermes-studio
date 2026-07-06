@@ -108,6 +108,18 @@ async function waitForMockCalls(mock: { mock: { calls: unknown[] } }, count: num
   }
 }
 
+async function waitForMockCallWith(
+  mock: { mock: { calls: unknown[][] } },
+  predicate: (call: unknown[]) => boolean,
+): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 1000) {
+    if (mock.mock.calls.some(call => predicate(call))) return
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error('Timed out waiting for matching mock call')
+}
+
 describe('GlobalAgentServer', () => {
   beforeEach(() => {
     vi.resetModules()
@@ -658,7 +670,9 @@ describe('GlobalAgentServer', () => {
     expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
       text: '好嘞，这就去查。',
     })
-    await waitForMockCalls(agentSocket.emit, 3)
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-1-tts-1',
+    )
     expect(agentSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-1',
@@ -679,6 +693,9 @@ describe('GlobalAgentServer', () => {
     expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({
       text: '结果如下： 请确认。',
     })
+    await waitForMockCallWith(agentSocket.emit, ([event, payload]) =>
+      event === 'audio.enqueue' && (payload as { segmentId?: string })?.segmentId === 'voice-1-tts-2',
+    )
     expect(agentSocket.emit).toHaveBeenCalledWith('audio.enqueue', expect.objectContaining({
       interactionId: 'voice-1',
       segmentId: 'voice-1-tts-2',
@@ -797,6 +814,14 @@ describe('GlobalAgentServer', () => {
       interactionId: 'voice-1',
       tool: 'approval',
       error: undefined,
+    })
+    localSocket.__handlers.get('tool.failed')?.({ tool: 'weather', error: 'permission denied' })
+    expect(agentSocket.emit).toHaveBeenCalledWith('tool.completed', {
+      type: 'tool.completed',
+      interactionId: 'voice-1',
+      tool: 'weather',
+      preview: undefined,
+      error: 'permission denied',
     })
     localSocket.__handlers.get('run.failed')?.({ error: 'done' })
   })

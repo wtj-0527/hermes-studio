@@ -41,8 +41,8 @@ export interface QueuedRun {
   workspace?: string | null
   source?: ChatRunSource
   sessionSource?: 'global_agent' | 'workflow'
-  codingAgentId?: 'claude-code' | 'codex'
-  agentId?: 'claude-code' | 'codex'
+  codingAgentId?: ChatCodingAgentId
+  agentId?: ChatCodingAgentId
   mode?: 'scoped' | 'global'
   baseUrl?: string
   base_url?: string
@@ -50,6 +50,8 @@ export interface QueuedRun {
   api_key?: string
   apiMode?: string
   api_mode?: string
+  mcpServers?: Record<string, unknown>
+  mcp_servers?: Record<string, unknown>
   oneShotModel?: boolean
   commandPassthrough?: boolean
   originSocketId?: string
@@ -113,6 +115,7 @@ export interface BridgeContextState {
 }
 
 export type ChatRunSource = 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
+export type ChatCodingAgentId = 'claude-code' | 'codex' | 'ekko-agent'
 
 export interface BridgeCompressionResult {
   messages: ChatMessage[]
