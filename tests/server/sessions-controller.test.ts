@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, symlink } from 'fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -232,6 +232,47 @@ describe('session conversations controller', () => {
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
     expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+  })
+
+
+  it('accepts legacy workspace-prefixed paths for session workspace files', async () => {
+    const workspace = '/tmp/hermes-test/research/workspace'
+    await rm('/tmp/hermes-test', { recursive: true, force: true })
+    await mkdir(join(workspace, 'project'), { recursive: true })
+    await writeFile(join(workspace, 'project', 'notes.md'), 'hello')
+    getSessionMock.mockReturnValue({
+      id: 'session-with-workspace',
+      profile: 'research',
+      workspace,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const listCtx: any = {
+      params: { id: 'session-with-workspace' },
+      query: { path: 'workspace/project' },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    await mod.listWorkspaceFiles(listCtx)
+
+    expect(listCtx.body.path).toBe('project')
+    expect(listCtx.body.absolutePath).toBe(join(workspace, 'project'))
+    expect(listCtx.body.entries).toEqual([
+      expect.objectContaining({ name: 'notes.md', path: 'project/notes.md', isDir: false }),
+    ])
+
+    const readCtx: any = {
+      params: { id: 'session-with-workspace' },
+      query: { path: 'workspace/project/notes.md' },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    await mod.readWorkspaceFile(readCtx)
+
+    expect(readCtx.body).toMatchObject({ content: 'hello', path: 'project/notes.md' })
+    await rm('/tmp/hermes-test', { recursive: true, force: true })
   })
 
   it('lists Windows drive roots for the workspace folder picker', async () => {

@@ -18,8 +18,8 @@ import { getLocalUsageStats, getRecordedUsageSessionIds, getUsage, getUsageBatch
 import type { UsageStatsAgentRow, UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
 import { deleteWorkspaceRunChangesForSession, getWorkspaceRunChangeFile as getWorkspaceRunChangeFileFromDb, listWorkspaceRunChangesForSession } from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
-import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
-import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
+import { getActiveProfileDir, getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { isNearestExistingRealPathWithin, isPathWithin, relativePathFromBase } from '../../services/hermes/hermes-path'
 import {
   isWorkspaceListPathAllowed,
   normalizeWindowsWorkspacePath,
@@ -36,7 +36,7 @@ import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/
 import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
 import { isSensitivePath, MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
 import { copyFile, mkdir, readFile, readdir, rename as fsRename, rm as fsRm, stat as fsStat, writeFile } from 'fs/promises'
-import { relative, normalize as pathNormalize, resolve as pathResolve } from 'path'
+import { basename, relative, normalize as pathNormalize, resolve as pathResolve } from 'path'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -535,8 +535,32 @@ function normalizeWorkspaceRelativePath(value: unknown, options: { allowEmpty?: 
   return normalized
 }
 
+function sessionWorkspacePrefix(ctx: any, workspace: string): string {
+  const profile = requestedProfile(ctx)
+  const homeDir = profile ? getProfileDir(profile) : getActiveProfileDir()
+  return (relativePathFromBase(workspace, homeDir) || basename(workspace)).replace(/\\/g, '/')
+}
+
+function stripSessionWorkspacePrefix(workspacePrefix: string, relativePath: string): string {
+  if (!workspacePrefix) return relativePath
+  if (relativePath === workspacePrefix) return ''
+  if (relativePath.startsWith(workspacePrefix + '/')) return relativePath.slice(workspacePrefix.length + 1)
+  return relativePath
+}
+
+function normalizeSessionWorkspaceRelativePath(ctx: any, workspace: string, value: unknown, options: { allowEmpty?: boolean } = {}): string {
+  return stripSessionWorkspacePrefix(
+    sessionWorkspacePrefix(ctx, workspace),
+    normalizeWorkspaceRelativePath(value, options),
+  )
+}
+
 function workspaceRelativePath(workspace: string, fullPath: string): string {
   return relative(workspace, fullPath).replace(/\\/g, '/')
+}
+
+function sessionWorkspaceRelativePath(ctx: any, workspace: string, value: string): string {
+  return stripSessionWorkspacePrefix(sessionWorkspacePrefix(ctx, workspace), value.replace(/\\/g, '/'))
 }
 
 function resolveSessionWorkspacePath(
@@ -549,7 +573,7 @@ function resolveSessionWorkspacePath(
   if (denySessionAccess(ctx, session)) throw Object.assign(new Error('Forbidden'), { code: 'forbidden', status: 403, handled: true })
   const workspace = String(session.workspace || '').trim()
   if (!workspace) throw Object.assign(new Error('Session workspace not found'), { code: 'workspace_not_found', status: 404 })
-  const relativePath = normalizeWorkspaceRelativePath(relativePathValue, options)
+  const relativePath = normalizeSessionWorkspaceRelativePath(ctx, workspace, relativePathValue, options)
   const fullPath = pathResolve(workspace, relativePath)
   if (!isPathWithin(fullPath, workspace)) {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path', status: 400 })
@@ -583,7 +607,7 @@ export async function listWorkspaceFiles(ctx: any) {
       const stat = await fsStat(entryFullPath)
       return {
         name: entry.name,
-        path: workspaceRelativePath(workspace, entryFullPath),
+        path: sessionWorkspaceRelativePath(ctx, workspace, workspaceRelativePath(workspace, entryFullPath)),
         absolutePath: entryFullPath,
         isDir: stat.isDirectory(),
         size: stat.size,
