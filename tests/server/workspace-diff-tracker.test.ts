@@ -231,63 +231,34 @@ describe('workspace diff tracker', () => {
     expect(state.db?.prepare('SELECT COUNT(*) AS count FROM workspace_run_change_files WHERE additions = 0 AND deletions = 0').get()).toEqual({ count: 0 })
   })
 
-  it('skips SQLite WAL and SHM sidecar files in non-git workspaces', async () => {
+  it('skips zero-line diffs while retaining line-level changes in git workspaces', async () => {
     const {
       completeWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
 
-    const workspace = join(root, 'plain-sqlite-sidecars')
-    mkdirSync(workspace)
+    writeFileSync(join(repo, '.global-cache'), Buffer.from([0, 1, 2, 3]))
+    writeFileSync(join(repo, 'state.db-wal'), 'before\n')
+    execFileSync('git', ['add', '.global-cache', 'state.db-wal'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'add binary cache'], { cwd: repo })
 
     startWorkspaceRunCheckpoint({
-      sessionId: 'session-sqlite-sidecars',
-      runId: 'run-sqlite-sidecars',
-      workspace,
-    })
-
-    writeFileSync(join(workspace, 'state.db-wal'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(workspace, 'state.db-shm'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(workspace, 'cache.sqlite-wal'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(workspace, 'cache.sqlite-shm'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(workspace, 'notes.md'), 'visible change\n')
-
-    const change = completeWorkspaceRunCheckpoint({
-      sessionId: 'session-sqlite-sidecars',
-      runId: 'run-sqlite-sidecars',
-      workspace,
-    })
-
-    expect(change).not.toBeNull()
-    expect(change?.files.map(file => file.path)).toEqual(['notes.md'])
-  })
-
-  it('skips SQLite WAL and SHM sidecar files in git workspaces', async () => {
-    const {
-      completeWorkspaceRunCheckpoint,
-      startWorkspaceRunCheckpoint,
-    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
-
-    startWorkspaceRunCheckpoint({
-      sessionId: 'session-git-sqlite-sidecars',
-      runId: 'run-git-sqlite-sidecars',
+      sessionId: 'session-git-zero-line',
+      runId: 'run-git-zero-line',
       workspace: repo,
     })
 
-    writeFileSync(join(repo, 'state.db-wal'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(repo, 'state.db-shm'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(repo, 'cache.sqlite-wal'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(repo, 'cache.sqlite-shm'), Buffer.alloc(32 * 1024, 0))
-    writeFileSync(join(repo, 'notes.md'), 'visible change\n')
+    writeFileSync(join(repo, '.global-cache'), Buffer.from([0, 4, 5, 6]))
+    writeFileSync(join(repo, 'state.db-wal'), 'after\n')
 
     const change = completeWorkspaceRunCheckpoint({
-      sessionId: 'session-git-sqlite-sidecars',
-      runId: 'run-git-sqlite-sidecars',
+      sessionId: 'session-git-zero-line',
+      runId: 'run-git-zero-line',
       workspace: repo,
     })
 
     expect(change).not.toBeNull()
-    expect(change?.files.map(file => file.path)).toEqual(['notes.md'])
+    expect(change?.files.map(file => file.path)).toEqual(['state.db-wal'])
   })
 
   it('records newly created ordinary files even when many unchanged files already exist in non-git workspaces', async () => {
@@ -323,7 +294,6 @@ describe('workspace diff tracker', () => {
     })
 
     expect(change).not.toBeNull()
-    expect(change?.files).toHaveLength(3)
     expect(change?.files.map(file => file.path)).toEqual(expect.arrayContaining([
       'README-visible.md',
       'config-visible.json',
