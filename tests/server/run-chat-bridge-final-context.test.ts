@@ -251,7 +251,13 @@ describe('bridge run final context usage', () => {
     }))
   })
 
-  it('refreshes full context tokens when a bridge run completes', async () => {
+  it('refreshes full context tokens when a bridge run completes without widening its execution policy', async () => {
+    const executionPolicy = {
+      allowedToolsets: [],
+      allowedTools: [],
+      skipMemory: true,
+      skipContextFiles: true,
+    }
     const emit = vi.fn()
     const nsp = makeNamespace(emit)
     const socket = makeSocket()
@@ -275,7 +281,7 @@ describe('bridge run final context usage', () => {
     await handleBridgeRun(
       nsp,
       socket,
-      { input: 'hello', session_id: 'session-1' },
+      { input: 'hello', session_id: 'session-1', execution_policy: executionPolicy },
       'default',
       sessionMap,
       bridge,
@@ -293,6 +299,7 @@ describe('bridge run final context usage', () => {
         model: 'gpt-test',
         provider: 'openai',
         workspace: '/tmp/hermes-bridge-final-context/default/workspace',
+        executionPolicy,
       },
     )
     expect(bridge.contextEstimate.mock.calls[0][2]).toContain('system prompt')
@@ -1234,7 +1241,13 @@ describe('bridge run final context usage', () => {
     )
   })
 
-  it('refreshes full context tokens when a bridge run fails', async () => {
+  it('refreshes full context tokens when a bridge run fails without widening its execution policy', async () => {
+    const executionPolicy = {
+      allowedToolsets: [],
+      allowedTools: [],
+      skipMemory: true,
+      skipContextFiles: true,
+    }
     const emit = vi.fn()
     const nsp = makeNamespace(emit)
     const socket = makeSocket()
@@ -1256,7 +1269,7 @@ describe('bridge run final context usage', () => {
     await handleBridgeRun(
       nsp,
       socket,
-      { input: 'hello', session_id: 'session-1' },
+      { input: 'hello', session_id: 'session-1', execution_policy: executionPolicy },
       'default',
       sessionMap,
       bridge,
@@ -1265,6 +1278,13 @@ describe('bridge run final context usage', () => {
       vi.fn(),
     )
 
+    expect(bridge.contextEstimate).toHaveBeenCalledWith(
+      'session-1',
+      [],
+      expect.any(String),
+      'default',
+      expect.objectContaining({ executionPolicy }),
+    )
     expect(state.contextTokens).toBe(54321)
     expect(emit).toHaveBeenCalledWith('usage.updated', expect.objectContaining({
       inputTokens: 11,
