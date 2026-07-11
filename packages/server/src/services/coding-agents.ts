@@ -660,6 +660,7 @@ function codexCatalogEntry(input: {
       { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
       { effort: 'high', description: 'Greater reasoning depth for complex problems' },
       { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
+      { effort: 'max', description: 'Maximum reasoning depth for the hardest quality-first tasks' },
     ],
     shell_type: 'shell_command',
     visibility: 'list',

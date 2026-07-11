@@ -494,6 +494,7 @@ export default {
         medium: 'Mittel',
         high: 'Hoch',
         xhigh: 'Sehr hoch',
+        max: 'Maximum',
       },
     },
     showToolCalls: 'Tool-Aufrufe anzeigen',

@@ -413,6 +413,7 @@ export default {
         medium: 'Средняя',
         high: 'Высокая',
         xhigh: 'Очень высокая',
+        max: 'Максимальная',
       },
     },
     autoPlaySpeech: 'Автовоспроизведение речи',

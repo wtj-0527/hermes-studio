@@ -497,6 +497,7 @@ export default {
         medium: '中',
         high: '高',
         xhigh: '超高',
+        max: '最大',
       },
     },
     autoPlaySpeech: '自動播放語音',

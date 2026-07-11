@@ -237,7 +237,7 @@ export function normalizeResponseFunctionCall(name: unknown, argumentsValue: unk
 
 export function targetReasoningEffort(target: any): string {
   const effort = String(target?.reasoningEffort || '').trim()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : ''
 }
 
 function stringifyContent(value: unknown): string {

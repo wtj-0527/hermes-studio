@@ -494,6 +494,7 @@ export default {
         medium: '中',
         high: '高',
         xhigh: '最高',
+        max: '最大',
       },
     },
     showToolCalls: 'ツール呼び出しを表示',

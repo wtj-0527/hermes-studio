@@ -494,6 +494,7 @@ export default {
         medium: '중간',
         high: '높음',
         xhigh: '매우 높음',
+        max: '최대',
       },
     },
     showToolCalls: '도구 호출 표시',

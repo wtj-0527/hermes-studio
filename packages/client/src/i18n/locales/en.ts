@@ -499,6 +499,7 @@ export default {
         medium: 'Medium',
         high: 'High',
         xhigh: 'Extra high',
+        max: 'Maximum',
       },
     },
     autoPlaySpeech: 'Auto-play voice',

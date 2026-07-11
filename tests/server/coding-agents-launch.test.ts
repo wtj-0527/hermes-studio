@@ -565,6 +565,11 @@ describe('coding agent launch preparation', () => {
     expect(catalog.models[0]).toHaveProperty('base_instructions')
     expect(catalog.models[0]).toHaveProperty('model_messages')
     expect(catalog.models[0]).toHaveProperty('default_reasoning_summary', 'auto')
+    expect(catalog.models[0].supported_reasoning_levels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ effort: 'max' }),
+      ]),
+    )
   })
 
   it('points Codex Chat Completions providers at the local Responses proxy', async () => {

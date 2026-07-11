@@ -180,6 +180,18 @@ describe('ChatInput draft persistence', () => {
 
     expect(wrapper.find('.n-popselect-stub').exists()).toBe(true)
     expect(wrapper.find('[data-value="high"]').exists()).toBe(true)
+    expect(wrapper.find('[data-value="max"]').exists()).toBe(true)
+  })
+
+  it('stores max reasoning effort for the active session', async () => {
+    const wrapper = mountForSession('session-reasoning-max')
+    const store = useChatStore()
+
+    await wrapper.get('[data-value="max"]').trigger('click')
+    await nextTick()
+
+    expect(store.sessions[0].reasoningEffort).toBe('max')
+    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning-max')).toBe('max')
   })
 
   it('stores the selected reasoning effort for the active session', async () => {

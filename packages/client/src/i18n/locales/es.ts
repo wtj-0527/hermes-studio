@@ -494,6 +494,7 @@ export default {
         medium: 'Medio',
         high: 'Alto',
         xhigh: 'Extra alto',
+        max: 'Máximo',
       },
     },
     showToolCalls: 'Mostrar llamadas de herramientas',

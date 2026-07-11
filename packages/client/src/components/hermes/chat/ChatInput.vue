@@ -48,6 +48,7 @@ const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
   { label: t('chat.reasoningEffort.options.high'), value: 'high' },
   { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
 ])
 const currentReasoningEffort = computed<string>(() =>
   chatStore.activeSession?.reasoningEffort || ''
