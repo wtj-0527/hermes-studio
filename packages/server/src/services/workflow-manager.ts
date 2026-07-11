@@ -609,12 +609,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
   }
 
-  async rerunFromNode(
-    workflowId: string,
-    runId: string,
-    nodeId: string,
-    input: WorkflowRerunFromNodeInput = {},
-  ): Promise<WorkflowRunNowResult> {
+  validateRerunFromNode(workflowId: string, runId: string): { workflow: WorkflowRecord; run: WorkflowRunRecord } {
     const workflow = this.get(workflowId)
     if (!workflow) {
       const err = new Error('workflow not found')
@@ -632,12 +627,21 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       ;(err as any).status = 409
       throw err
     }
-    const usesOrchestrationV1 = hasNonLegacyWorkflowOrchestration(run.snapshot_nodes, run.snapshot_edges)
-    if (usesOrchestrationV1) {
+    if (hasNonLegacyWorkflowOrchestration(run.snapshot_nodes, run.snapshot_edges)) {
       const err = new Error('rerun from node is not supported for orchestration v1 runs')
       ;(err as any).status = 409
       throw err
     }
+    return { workflow, run }
+  }
+
+  async rerunFromNode(
+    workflowId: string,
+    runId: string,
+    nodeId: string,
+    input: WorkflowRerunFromNodeInput = {},
+  ): Promise<WorkflowRunNowResult> {
+    const { workflow, run } = this.validateRerunFromNode(workflowId, runId)
 
     const chatRun = getChatRunServer()
     if (!chatRun?.runAndWait) {

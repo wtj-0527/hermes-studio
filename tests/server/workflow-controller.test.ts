@@ -4,6 +4,7 @@ const managerMock = vi.hoisted(() => ({
   get: vi.fn(),
   deleteRun: vi.fn(),
   rerunFromNode: vi.fn(),
+  validateRerunFromNode: vi.fn(),
   runNow: vi.fn(),
   prepareRun: vi.fn(),
   runPrepared: vi.fn(),
@@ -45,6 +46,7 @@ describe('workflow controller', () => {
     managerMock.get.mockReset()
     managerMock.deleteRun.mockReset()
     managerMock.rerunFromNode.mockReset()
+    managerMock.validateRerunFromNode.mockReset()
     managerMock.runNow.mockReset()
     managerMock.prepareRun.mockReset()
     managerMock.prepareRun.mockReturnValue({ workflow: { id: 'workflow-1' }, compiled: {} })
@@ -178,6 +180,7 @@ describe('workflow controller', () => {
 
     await mod.rerunFromNode(c)
 
+    expect(managerMock.validateRerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1')
     expect(managerMock.rerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-2', {
       profile: 'default',
       user,
@@ -186,6 +189,28 @@ describe('workflow controller', () => {
     })
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
+  })
+
+  it('returns orchestration v1 rerun rejection synchronously instead of accepting a no-op', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.validateRerunFromNode.mockImplementation(() => {
+      const error: any = new Error('rerun from node is not supported for orchestration v1 runs')
+      error.status = 409
+      throw error
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({
+      params: { id: 'workflow-1', runId: 'run-1' },
+      request: { body: { node_id: 'node-2', preserve_start_node: true } },
+    })
+
+    await mod.rerunFromNode(c)
+
+    expect(managerMock.validateRerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1')
+    expect(managerMock.rerunFromNode).not.toHaveBeenCalled()
+    expect(c.status).toBe(409)
+    expect(c.body).toEqual({ error: 'rerun from node is not supported for orchestration v1 runs' })
   })
 
   it('deletes a workflow run through the workflow manager', async () => {

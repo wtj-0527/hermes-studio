@@ -263,6 +263,13 @@ export async function rerunFromNode(ctx: Context) {
   if (timeoutMs.value !== undefined) runInput.timeoutMs = timeoutMs.value
 
   const manager = getWorkflowManager()
+  try {
+    manager.validateRerunFromNode(id, runId)
+  } catch (err: any) {
+    ctx.status = Number.isFinite(err?.status) ? err.status : 500
+    ctx.body = { error: err?.message || 'failed to rerun workflow' }
+    return
+  }
   void manager.rerunFromNode(id, runId, nodeId, runInput).catch((err: any) => {
     const message = err?.message || 'failed to rerun workflow'
     logger.error(err, '[workflow] async rerun failed for workflow %s run %s node %s', id, runId, nodeId)
