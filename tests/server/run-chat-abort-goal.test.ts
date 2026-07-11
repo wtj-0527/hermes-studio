@@ -165,4 +165,42 @@ describe('run chat abort goal handling', () => {
       synced: true,
     }))
   })
+
+  it('routes a workflow-scoped coding agent abort to its owning runner instead of the Hermes bridge', async () => {
+    const { handleAbort } = await import('../../packages/server/src/services/hermes/run-chat/abort')
+    const { emit, nsp, socket } = makeHarness()
+    codingAgentRunManagerMock.hasSession.mockReturnValue(true)
+    codingAgentRunManagerMock.stop.mockReturnValue(true)
+    const abortController = { abort: vi.fn() }
+    const state = {
+      messages: [],
+      isWorking: true,
+      isAborting: false,
+      events: [],
+      queue: [],
+      runId: 'workflow-run-1',
+      profile: 'default',
+      source: 'workflow',
+      abortController,
+    } as any
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      interrupt: vi.fn().mockRejectedValue(new Error('unknown session')),
+      goalPause: vi.fn(),
+    }
+    const runQueuedItem = vi.fn()
+
+    await handleAbort(nsp as any, socket as any, 'session-1', sessionMap, bridge, runQueuedItem)
+
+    expect(bridge.interrupt).not.toHaveBeenCalled()
+    expect(bridge.goalPause).not.toHaveBeenCalled()
+    expect(flushBridgePendingToDbMock).not.toHaveBeenCalled()
+    expect(flushResponseRunToDbMock).toHaveBeenCalledWith(state, 'session-1')
+    expect(abortController.abort).toHaveBeenCalledTimes(1)
+    expect(codingAgentRunManagerMock.stop).toHaveBeenCalledWith('session-1', { reportClosed: false })
+    expect(emit).toHaveBeenCalledWith('abort.completed', expect.objectContaining({
+      session_id: 'session-1', synced: true,
+    }))
+  })
+
 })

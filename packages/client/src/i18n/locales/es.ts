@@ -1960,6 +1960,35 @@ jobTriggered: 'Job ejecutado',
     noData: 'Sin datos de uso',
   },
 
+  workflow: {
+    orchestration: {
+      feedbackLoop: 'Bucle de retroalimentación',
+      maxIterations: 'Máximo de iteraciones',
+    },
+    runs: {
+      iterationHistory: 'Historial de iteraciones',
+    },
+    portability: {
+      export: 'Exportar',
+      import: 'Importar',
+      previewTitle: 'Vista previa de importación',
+      exportFailed: 'Error al exportar',
+      importFailed: 'Error al importar',
+      imported: 'Flujo de trabajo importado',
+      invalidJson: 'JSON de flujo de trabajo no válido',
+      tooLarge: 'El archivo supera 1 MiB',
+      missing: 'Dependencias faltantes',
+      warnings: 'Advertencias',
+      profiles: 'Perfiles',
+      agents: 'Agentes',
+      providers: 'Proveedores',
+      models: 'Modelos',
+      skills: 'Habilidades',
+      inactiveNotice: 'La importación crea un flujo nuevo e inactivo y nunca lo inicia automáticamente.',
+      confirmImport: 'Confirmar importación',
+    },
+  },
+
   skillsUsage: {
     title: 'Uso de habilidades',
     subtitle: 'Sigue las cargas y ediciones de habilidades en sesiones de Hermes',

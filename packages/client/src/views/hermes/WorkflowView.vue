@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NButton, NCheckbox, NDrawer, NDrawerContent, NDropdown, NInput, NModal, NPopconfirm, NSelect, NSpace, NTooltip, useMessage, type DropdownOption } from 'naive-ui'
+import { NButton, NCheckbox, NDrawer, NDrawerContent, NDropdown, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTooltip, useMessage, type DropdownOption } from 'naive-ui'
 import {
   ConnectionLineType,
   MarkerType,
@@ -13,6 +13,7 @@ import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
 import { useI18n } from 'vue-i18n'
 import WorkflowAgentNode from '@/components/hermes/workflow/WorkflowAgentNode.vue'
+import WorkflowPortabilityControls from '@/components/hermes/workflow/WorkflowPortabilityControls.vue'
 import FolderPicker from '@/components/hermes/chat/FolderPicker.vue'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
 import MessageList from '@/components/hermes/chat/MessageList.vue'
@@ -35,6 +36,7 @@ import {
   stopWorkflowRun,
   updateWorkflow as updateWorkflowApi,
   type WorkflowRunRecord,
+  type WorkflowRunNodeExecutionRecord,
   type WorkflowRecord,
   type WorkflowViewport,
 } from '@/api/hermes/workflows'
@@ -56,8 +58,10 @@ import type {
   WorkflowNodeStatus,
   WorkflowSelectOption,
 } from '@/components/hermes/workflow/types'
-import { buildWorkflowEdgeOrchestration, edgeEvidenceVisual, edgeOrchestrationLabel, normalizeWorkflowEdgeOrchestration, legacyWorkflowEdgeId, normalizeWorkflowJoinMode, withWorkflowEdgeOrchestration, type WorkflowConditionOperator, type WorkflowEdgeOrchestration, type WorkflowRoute } from '@/components/hermes/workflow/orchestration'
+import { groupWorkflowExecutionHistory, latestWorkflowNodeExecution } from '@/components/hermes/workflow/history'
+import { MAX_WORKFLOW_LOOP_ITERATIONS, buildWorkflowEdgeOrchestration, edgeEvidenceVisual, edgeOrchestrationLabel, normalizeWorkflowEdgeOrchestration, legacyWorkflowEdgeId, normalizeWorkflowJoinMode, withWorkflowEdgeOrchestration, type WorkflowConditionOperator, type WorkflowEdgeOrchestration, type WorkflowRoute } from '@/components/hermes/workflow/orchestration'
 import type { AvailableModelGroup } from '@/api/hermes/system'
+import { normalizeReasoningEffort } from '../../../../shared/reasoning-effort'
 
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -122,6 +126,8 @@ const edgeConditionEnabled = ref(false)
 const edgeConditionPath = ref('')
 const edgeConditionOperator = ref<WorkflowConditionOperator>('equals')
 const edgeConditionValue = ref('')
+const edgeLoopEnabled = ref(false)
+const edgeLoopMaxIterations = ref(3)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuOpenedAt = ref(0)
@@ -358,6 +364,7 @@ function makeNode(
       provider: data.provider || defaultModelSelection.value.provider,
       model: data.model || defaultModelSelection.value.model,
       apiMode: data.apiMode || defaultApiMode(data.provider || defaultModelSelection.value.provider),
+      reasoningEffort: normalizeReasoningEffort(data.reasoningEffort),
       input: data.input || '',
       skills: data.skills || [],
       images: data.images || [],
@@ -396,6 +403,7 @@ const selectedWorkflowRun = computed(() =>
     ? workflowRuns.value.find(run => run.id === selectedWorkflowRunId.value) || null
     : null,
 )
+const selectedWorkflowRunExecutionGroups = computed(() => groupWorkflowExecutionHistory(selectedWorkflowRun.value?.node_executions || []))
 
 watch([agentOptions, modelGroups], () => {
   nodes.value = nodes.value.map<WorkflowNode>(node => ({
@@ -570,6 +578,7 @@ function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
       provider: node.data.provider,
       model: node.data.model,
       apiMode: node.data.apiMode,
+      ...(node.data.reasoningEffort ? { reasoningEffort: node.data.reasoningEffort } : {}),
       input: node.data.input,
       skills: [...node.data.skills],
       images: [...node.data.images],
@@ -616,6 +625,7 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
       provider: data.provider,
       model: data.model,
       apiMode: data.apiMode,
+      reasoningEffort: normalizeReasoningEffort((data as any).reasoningEffort),
       input: data.input,
       skills: Array.isArray(data.skills) ? data.skills.filter(item => typeof item === 'string') : [],
       images: Array.isArray(data.images) ? data.images.filter(item => typeof item === 'string') : [],
@@ -682,6 +692,13 @@ async function initializeWorkflowPage() {
   void subscribeWorkflowStatuses().then(applyWorkflowRuntimeStatuses).catch((err) => {
     console.error('Failed to subscribe workflow statuses:', err)
   })
+}
+
+async function handleWorkflowImported(record: WorkflowRecord) {
+  const imported = workflowDocumentFromRecord(record)
+  const next = workflows.value.filter(workflow => workflow.id !== imported.id)
+  workflows.value = [imported, ...next]
+  await applyWorkflow(imported, false)
 }
 
 async function loadWorkflows() {
@@ -790,7 +807,12 @@ function workflowNodeStatusFromRun(run: WorkflowRunRecord, nodeId: string): Work
   const runtimeStatus = runtimeStatusByWorkflowId.value[run.workflow_id]
   if (runtimeStatus?.runId === run.id) return workflowNodeStatusFromRuntime(runtimeStatus, nodeId)
 
+  const execution = latestWorkflowNodeExecution(run.node_executions || [], nodeId)
   const nodeSession = run.node_sessions?.find(session => session.node_id === nodeId)
+  if (execution) {
+    if (execution.status === 'blocked') return 'failed'
+    if (['queued', 'running', 'completed', 'failed', 'canceled', 'skipped'].includes(execution.status)) return execution.status as WorkflowNodeStatus
+  }
   const durableState = run.node_states?.[nodeId]
   if (!nodeSession && durableState?.status === 'skipped') return 'skipped'
   switch (nodeSession?.status) {
@@ -811,6 +833,8 @@ function workflowNodeStatusFromRun(run: WorkflowRunRecord, nodeId: string): Work
 function workflowNodeErrorFromRun(run: WorkflowRunRecord, nodeId: string): string | null {
   const runtimeStatus = runtimeStatusByWorkflowId.value[run.workflow_id]
   if (runtimeStatus?.runId === run.id) return workflowNodeErrorFromRuntime(runtimeStatus, nodeId)
+  const execution = latestWorkflowNodeExecution(run.node_executions || [], nodeId)
+  if (execution?.status === 'failed' || execution?.status === 'blocked') return execution.error || run.error || null
   const nodeSession = run.node_sessions?.find(session => session.node_id === nodeId)
   if (nodeSession?.status === 'failed' || nodeSession?.status === 'blocked') return nodeSession.error || run.error || null
   return null
@@ -819,25 +843,40 @@ function workflowNodeErrorFromRun(run: WorkflowRunRecord, nodeId: string): strin
 async function openWorkflowNodeSession(nodeId: string) {
   const run = selectedWorkflowRun.value
   if (!run) return
-  const node = nodes.value.find(item => item.id === nodeId)
+  const execution = latestWorkflowNodeExecution(run.node_executions || [], nodeId)
+  if (execution) return openWorkflowExecutionSession(execution)
   const nodeSession = run.node_sessions?.find(session => session.node_id === nodeId)
-  if (!nodeSession?.session_id) {
+  const sessionId = nodeSession?.session_id
+  const sessionProfile = nodeSession?.profile || run.profile
+  if (!sessionId) {
     message.warning(t('workflow.runs.noNodeSession'))
     return
   }
+  return openWorkflowSession(sessionId, sessionProfile, nodeId)
+}
 
+async function openWorkflowExecutionSession(execution: WorkflowRunNodeExecutionRecord) {
+  if (!execution.session_id) {
+    message.warning(t('workflow.runs.noNodeSession'))
+    return
+  }
+  return openWorkflowSession(execution.session_id, execution.profile, execution.node_id)
+}
+
+async function openWorkflowSession(sessionId: string, sessionProfile: string, nodeId: string) {
+  const node = nodes.value.find(item => item.id === nodeId)
   workflowChatPanelTitle.value = t('workflow.runs.nodeSessionTitle', { node: node?.data.title || nodeId })
-  workflowChatPanelSessionId.value = nodeSession.session_id
+  workflowChatPanelSessionId.value = sessionId
   workflowChatPanelVisible.value = true
   workflowChatPanelLoading.value = true
   try {
-    const session = await fetchSession(nodeSession.session_id, nodeSession.profile || run.profile)
+    const session = await fetchSession(sessionId, sessionProfile)
     if (!session) {
       message.error(t('workflow.runs.loadNodeSessionFailed'))
       return
     }
     chatStore.ensureSessionLoaded(session)
-    await chatStore.switchSession(nodeSession.session_id)
+    await chatStore.switchSession(sessionId)
   } catch (err) {
     console.error('Failed to load workflow node session:', err)
     message.error(t('workflow.runs.loadNodeSessionFailed'))
@@ -1505,6 +1544,8 @@ function openEdgeEditor(edgeId: string) {
   edgeConditionPath.value = policy.condition?.path || ''
   edgeConditionOperator.value = policy.condition?.operator || 'equals'
   edgeConditionValue.value = policy.condition?.value === undefined ? '' : JSON.stringify(policy.condition.value)
+  edgeLoopEnabled.value = Boolean(policy.loop)
+  edgeLoopMaxIterations.value = policy.loop?.maxIterations || 3
   edgeEditorVisible.value = true
 }
 function saveEdgeOrchestration() {
@@ -1516,6 +1557,7 @@ function saveEdgeOrchestration() {
   try {
     orchestration = buildWorkflowEdgeOrchestration(
       edgeRoute.value, edgeConditionEnabled.value, edgeConditionPath.value, edgeConditionOperator.value, value,
+      edgeLoopEnabled.value, edgeLoopMaxIterations.value,
     )
   } catch {
     message.error(t('workflow.orchestration.invalidCondition'))
@@ -1833,6 +1875,13 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           </div>
         </div>
         <div class="header-actions">
+          <WorkflowPortabilityControls
+            v-if="!selectedWorkflowRunId"
+            :workflow-id="activeWorkflowId"
+            :workflow-name="workflowName"
+            :profile="activeWorkflowProfile"
+            @imported="handleWorkflowImported"
+          />
           <NTooltip trigger="hover">
             <template #trigger>
               <NButton
@@ -1945,6 +1994,8 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           <NSelect v-model:value="edgeConditionOperator" :options="['equals','not_equals','exists','truthy','contains'].map(value => ({ label: value, value }))" />
           <NInput v-if="!['exists','truthy'].includes(edgeConditionOperator)" v-model:value="edgeConditionValue" :placeholder="t('workflow.orchestration.value')" />
         </template>
+        <NCheckbox v-model:checked="edgeLoopEnabled">{{ t('workflow.orchestration.feedbackLoop') }}</NCheckbox>
+        <NInputNumber v-if="edgeLoopEnabled" v-model:value="edgeLoopMaxIterations" :min="1" :max="MAX_WORKFLOW_LOOP_ITERATIONS" :precision="0" :placeholder="t('workflow.orchestration.maxIterations')" />
         <NButton type="primary" @click="saveEdgeOrchestration">{{ t('common.save') }}</NButton>
       </NSpace>
     </NModal>
@@ -2081,6 +2132,19 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
             </div>
             <div v-if="run.error" class="workflow-run-error" :title="run.error">{{ run.error }}</div>
           </button>
+        </div>
+        <div v-if="selectedWorkflowRun?.orchestration_version === 2" class="workflow-run-v2-history">
+          <div class="workflow-run-v2-heading">{{ t('workflow.runs.iterationHistory') }}</div>
+          <div v-for="group in selectedWorkflowRunExecutionGroups" :key="group.key" class="workflow-run-v2-group">
+            <div class="workflow-run-v2-path">{{ group.label }}</div>
+            <button v-for="execution in group.executions" :key="execution.execution_id" type="button" class="workflow-run-v2-execution" :disabled="!execution.session_id" @click="openWorkflowExecutionSession(execution)">
+              <span>{{ execution.node_id }}</span><span>{{ execution.status }}</span>
+            </button>
+          </div>
+          <div v-for="iteration in selectedWorkflowRun.loop_iterations || []" :key="iteration.id" class="workflow-run-v2-loop">
+            {{ iteration.loop_id }} #{{ iteration.iteration }} · {{ iteration.status }}
+          </div>
+          <div v-if="selectedWorkflowRun.terminal_code" class="workflow-run-error">{{ selectedWorkflowRun.terminal_code }}</div>
         </div>
         <NDropdown
           placement="bottom-start"
@@ -2767,6 +2831,69 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workflow-run-v2-history {
+  flex: 0 0 auto;
+  max-height: 42%;
+  overflow-y: auto;
+  border-top: 1px solid $border-light;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-run-v2-heading,
+.workflow-run-v2-path {
+  color: $text-primary;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+}
+
+.workflow-run-v2-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 2px solid rgba(var(--accent-primary-rgb), 0.35);
+  padding-left: 7px;
+}
+
+.workflow-run-v2-path,
+.workflow-run-v2-loop {
+  overflow-wrap: anywhere;
+}
+
+.workflow-run-v2-execution {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-secondary;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 11px;
+  line-height: 15px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: $text-primary;
+    background: rgba(var(--accent-primary-rgb), 0.08);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+}
+
+.workflow-run-v2-loop {
+  color: $text-muted;
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .workflow-flow {

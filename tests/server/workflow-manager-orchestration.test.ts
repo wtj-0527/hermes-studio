@@ -30,6 +30,7 @@ vi.mock('../../packages/server/src/services/agent-runner/coding-agent-run-manage
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({ deleteSessionForProfile: vi.fn() }))
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({ listProfileNamesFromDisk: vi.fn(() => []) }))
 vi.mock('../../packages/server/src/services/logger', () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }))
+vi.mock('../../packages/server/src/controllers/hermes/models', () => ({ getAvailableModelReferencesForProfile: vi.fn(async () => []) }))
 
 function node(id: string, input = id, joinMode?: 'all' | 'any') {
   return { id, type: 'agent', data: { title: id, agent: 'hermes', input, orchestration: joinMode ? { joinMode } : undefined } }

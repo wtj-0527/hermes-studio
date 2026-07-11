@@ -1959,6 +1959,35 @@ export default {
     noData: '使用データがありません',
   },
 
+  workflow: {
+    orchestration: {
+      feedbackLoop: 'フィードバックループ',
+      maxIterations: '最大反復回数',
+    },
+    runs: {
+      iterationHistory: '反復履歴',
+    },
+    portability: {
+      export: 'エクスポート',
+      import: 'インポート',
+      previewTitle: 'インポートプレビュー',
+      exportFailed: 'エクスポートに失敗しました',
+      importFailed: 'インポートに失敗しました',
+      imported: 'ワークフローをインポートしました',
+      invalidJson: 'ワークフロー JSON が無効です',
+      tooLarge: 'ワークフローファイルが 1 MiB を超えています',
+      missing: '不足している依存関係',
+      warnings: '警告',
+      profiles: 'プロファイル',
+      agents: 'エージェント',
+      providers: 'プロバイダー',
+      models: 'モデル',
+      skills: 'スキル',
+      inactiveNotice: 'インポートでは新しい未実行ワークフローが作成され、自動実行されません。',
+      confirmImport: 'インポートを確認',
+    },
+  },
+
   skillsUsage: {
     title: 'スキル使用状況',
     subtitle: 'Hermes セッションでのスキル読み込みと編集を追跡します',

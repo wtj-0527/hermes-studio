@@ -1960,6 +1960,35 @@ jobTriggered: 'Job declenche',
     noData: 'Aucune donnee d\'utilisation',
   },
 
+  workflow: {
+    orchestration: {
+      feedbackLoop: 'Boucle de rétroaction',
+      maxIterations: 'Nombre maximal d’itérations',
+    },
+    runs: {
+      iterationHistory: 'Historique des itérations',
+    },
+    portability: {
+      export: 'Exporter',
+      import: 'Importer',
+      previewTitle: 'Aperçu de l’importation',
+      exportFailed: 'Échec de l’exportation',
+      importFailed: 'Échec de l’importation',
+      imported: 'Workflow importé',
+      invalidJson: 'JSON de workflow invalide',
+      tooLarge: 'Le fichier dépasse 1 Mio',
+      missing: 'Dépendances manquantes',
+      warnings: 'Avertissements',
+      profiles: 'Profils',
+      agents: 'Agents',
+      providers: 'Fournisseurs',
+      models: 'Modèles',
+      skills: 'Compétences',
+      inactiveNotice: 'L’importation crée un nouveau workflow inactif et ne le démarre jamais automatiquement.',
+      confirmImport: 'Confirmer l’importation',
+    },
+  },
+
   skillsUsage: {
     title: 'Utilisation des compétences',
     subtitle: 'Suivre les chargements et modifications de compétences dans les sessions Hermes',

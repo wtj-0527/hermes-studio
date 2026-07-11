@@ -177,6 +177,13 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
   error: 'TEXT',
+  orchestration_version: 'INTEGER NOT NULL DEFAULT 1',
+  compiler_version: "TEXT NOT NULL DEFAULT ''",
+  compiled_plan_json: "TEXT NOT NULL DEFAULT '{}'",
+  deadline_at: 'INTEGER',
+  execution_budget: 'INTEGER NOT NULL DEFAULT 0',
+  execution_count: 'INTEGER NOT NULL DEFAULT 0',
+  terminal_code: 'TEXT',
 }
 
 export const WORKFLOW_RUNS_INDEXES = {
@@ -237,6 +244,81 @@ export const WORKFLOW_RUN_NODE_SESSIONS_INDEXES = {
   idx_workflow_run_node_sessions_status: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_status ON workflow_run_node_sessions(status)',
   idx_workflow_run_node_sessions_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_sequence ON workflow_run_node_sessions(run_id, sequence)',
   uniq_workflow_run_node_sessions_run_node: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_node ON workflow_run_node_sessions(run_id, node_id)',
+}
+
+
+export const WORKFLOW_RUN_NODE_EXECUTIONS_TABLE = 'workflow_run_node_executions'
+export const WORKFLOW_RUN_NODE_EXECUTIONS_SCHEMA: Record<string, string> = {
+  execution_id: 'TEXT PRIMARY KEY',
+  run_id: 'TEXT NOT NULL',
+  workflow_id: 'TEXT NOT NULL',
+  node_id: 'TEXT NOT NULL',
+  session_id: 'TEXT',
+  profile: "TEXT NOT NULL DEFAULT 'default'",
+  agent: "TEXT NOT NULL DEFAULT ''",
+  agent_mode: "TEXT NOT NULL DEFAULT ''",
+  iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  status: "TEXT NOT NULL DEFAULT 'queued'",
+  reason: "TEXT NOT NULL DEFAULT ''",
+  sequence: 'INTEGER NOT NULL DEFAULT 0',
+  started_at: 'INTEGER',
+  finished_at: 'INTEGER',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+  error: 'TEXT',
+}
+export const WORKFLOW_RUN_NODE_EXECUTIONS_INDEXES = {
+  idx_workflow_run_node_executions_run: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_executions_run ON workflow_run_node_executions(run_id, sequence)',
+  idx_workflow_run_node_executions_session: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_executions_session ON workflow_run_node_executions(session_id)',
+  uniq_workflow_run_node_execution_instance: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_execution_instance ON workflow_run_node_executions(run_id, node_id, iteration_path_json)',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE = 'workflow_run_edge_evaluations'
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  run_id: 'TEXT NOT NULL',
+  workflow_id: 'TEXT NOT NULL',
+  source_execution_id: 'TEXT',
+  consumed_by_execution_id: 'TEXT',
+  edge_id: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL',
+  target_node_id: 'TEXT NOT NULL',
+  iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  loop_id: 'TEXT',
+  status: "TEXT NOT NULL DEFAULT 'not_taken'",
+  delivery_status: "TEXT NOT NULL DEFAULT 'pending'",
+  reason: "TEXT NOT NULL DEFAULT ''",
+  context_json: "TEXT NOT NULL DEFAULT '{}'",
+  sequence: 'INTEGER NOT NULL DEFAULT 0',
+  evaluated_at: 'INTEGER NOT NULL',
+  created_at: 'INTEGER NOT NULL',
+}
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES = {
+  idx_workflow_run_edge_evaluations_run: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_run ON workflow_run_edge_evaluations(run_id, sequence)',
+  idx_workflow_run_edge_evaluations_source: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_source ON workflow_run_edge_evaluations(source_execution_id)',
+  idx_workflow_run_edge_evaluations_consumer: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_consumer ON workflow_run_edge_evaluations(consumed_by_execution_id)',
+}
+
+export const WORKFLOW_RUN_LOOP_ITERATIONS_TABLE = 'workflow_run_loop_iterations'
+export const WORKFLOW_RUN_LOOP_ITERATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  run_id: 'TEXT NOT NULL',
+  workflow_id: 'TEXT NOT NULL',
+  loop_id: 'TEXT NOT NULL',
+  iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  iteration: 'INTEGER NOT NULL',
+  status: "TEXT NOT NULL DEFAULT 'running'",
+  feedback_evaluation_id: 'TEXT',
+  sequence: 'INTEGER NOT NULL DEFAULT 0',
+  started_at: 'INTEGER NOT NULL',
+  finished_at: 'INTEGER',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+  error: 'TEXT',
+}
+export const WORKFLOW_RUN_LOOP_ITERATIONS_INDEXES = {
+  idx_workflow_run_loop_iterations_run: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_loop_iterations_run ON workflow_run_loop_iterations(run_id, sequence)',
+  uniq_workflow_run_loop_iteration_instance: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_loop_iteration_instance ON workflow_run_loop_iterations(run_id, loop_id, iteration_path_json)',
 }
 
 // ============================================================================
@@ -820,6 +902,15 @@ export function initAllHermesTables(): void {
     })
     syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
       indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_NODE_EXECUTIONS_TABLE, WORKFLOW_RUN_NODE_EXECUTIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_NODE_EXECUTIONS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_LOOP_ITERATIONS_TABLE, WORKFLOW_RUN_LOOP_ITERATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_LOOP_ITERATIONS_INDEXES,
     })
 
     // Compression snapshot

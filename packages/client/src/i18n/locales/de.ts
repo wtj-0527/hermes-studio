@@ -1960,6 +1960,35 @@ jobTriggered: 'Job ausgelost',
     noData: 'Keine Nutzungsdaten',
   },
 
+  workflow: {
+    orchestration: {
+      feedbackLoop: 'Rückkopplungsschleife',
+      maxIterations: 'Maximale Iterationen',
+    },
+    runs: {
+      iterationHistory: 'Iterationsverlauf',
+    },
+    portability: {
+      export: 'Exportieren',
+      import: 'Importieren',
+      previewTitle: 'Importvorschau',
+      exportFailed: 'Export fehlgeschlagen',
+      importFailed: 'Import fehlgeschlagen',
+      imported: 'Workflow importiert',
+      invalidJson: 'Ungültiges Workflow-JSON',
+      tooLarge: 'Workflow-Datei überschreitet 1 MiB',
+      missing: 'Fehlende Abhängigkeiten',
+      warnings: 'Warnungen',
+      profiles: 'Profile',
+      agents: 'Agenten',
+      providers: 'Anbieter',
+      models: 'Modelle',
+      skills: 'Skills',
+      inactiveNotice: 'Der Import erstellt einen neuen inaktiven Workflow und startet ihn niemals automatisch.',
+      confirmImport: 'Import bestätigen',
+    },
+  },
+
   skillsUsage: {
     title: 'Skill-Nutzung',
     subtitle: 'Skill-Ladevorgänge und -Bearbeitungen aus Hermes-Sitzungen verfolgen',

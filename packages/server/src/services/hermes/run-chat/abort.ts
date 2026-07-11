@@ -33,6 +33,7 @@ export async function handleAbort(
     sessionMap.set(sessionId, state)
   }
   const isCodingAgentRun = state?.source === 'coding_agent' || hasCodingAgentRun
+  const shouldAbortThroughBridge = isBridgeRunSource(state?.source) && !isCodingAgentRun
   if ((!state?.isWorking && !hasCodingAgentRun) || (state && !isCodingAgentRun && !state.runId && !state.abortController)) {
     logger.info({ sessionId }, '[chat-run-socket][abort] ignored: no active run')
     if (state) {
@@ -68,13 +69,13 @@ export async function handleAbort(
   logger.info({ sessionId, runId }, '[chat-run-socket][abort] started')
 
   // Flush in-memory assistant text to DB before aborting the stream.
-  if (isBridgeRunSource(activeState.source)) {
+  if (shouldAbortThroughBridge) {
     flushBridgePendingToDb(activeState, sessionId)
   } else {
     flushResponseRunToDb(activeState, sessionId)
   }
 
-  if (isBridgeRunSource(activeState.source)) {
+  if (shouldAbortThroughBridge) {
     let interruptResult: any = null
     try {
       interruptResult = await bridge.interrupt(sessionId, 'Aborted by user', activeState.profile)
@@ -109,7 +110,7 @@ export async function handleAbort(
       await markAbortCompleted(nsp, socket, sessionId, runId || 'bridge_abort_timeout', sessionMap, runQueuedItem, false)
       return
     }
-  } else if (activeState.source === 'coding_agent') {
+  } else if (isCodingAgentRun) {
     activeState.abortController?.abort()
     codingAgentRunManager.stop(sessionId, { reportClosed: false })
   } else if (activeState.abortController) {

@@ -311,7 +311,7 @@ async function isCopilotAuthorized(envContent: string): Promise<boolean> {
   return !!(await resolveCopilotOAuthToken(envContent))
 }
 
-async function buildAvailableForProfile(
+export async function buildAvailableForProfile(
   profile: string,
   modelCatalogCache: ProviderModelCatalogCache,
   appConfig: Awaited<ReturnType<typeof readAppConfig>>,
@@ -447,6 +447,26 @@ async function buildAvailableForProfile(
   const groupsWithCustomModels = applyCustomModels(groups, normalizeCustomModels(appConfig.customModels))
 
   return { profile, default: currentDefault, default_provider: currentDefaultProvider, groups: groupsWithCustomModels }
+}
+
+export async function getAvailableModelReferencesForProfile(profile: string): Promise<Array<{ provider: string; model: string; apiMode: string }>> {
+  const appConfig = await readAppConfig()
+  const aliases = normalizeAliases(appConfig.modelAliases)
+  const visibility = normalizeModelVisibility(appConfig.modelVisibility)
+  const catalogCache = await readProviderModelCatalogCache()
+  const result = await buildAvailableForProfile(profile, catalogCache, appConfig)
+  const groups = applyModelVisibility(applyModelAliases(result.groups, aliases), visibility)
+  const references = new Map<string, { provider: string; model: string; apiMode: string }>()
+  for (const group of groups) {
+    const apiMode = group.api_mode || ''
+    for (const model of group.models) {
+      const key = `${group.provider}\0${model}\0${apiMode}`
+      references.set(key, { provider: group.provider, model, apiMode })
+    }
+  }
+  return [...references.values()].sort((a, b) => (
+    a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model) || a.apiMode.localeCompare(b.apiMode)
+  ))
 }
 
 export async function getAvailable(ctx: any) {

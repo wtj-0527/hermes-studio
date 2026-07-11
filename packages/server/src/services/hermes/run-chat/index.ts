@@ -7,6 +7,8 @@
  * - compression.ts       → context window management
  */
 
+import { normalizeReasoningEffort, type ReasoningEffort } from '../../../../../shared/reasoning-effort'
+import { validateReasoningEffortForProfile } from '../../reasoning-capability'
 import type { Server, Socket } from 'socket.io'
 import { logger } from '../../logger'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
@@ -251,6 +253,20 @@ export class ChatRunSocket {
       // Local patch (reasoning-effort): per-session reasoning effort override.
       reasoning_effort?: string
     }) => {
+      let normalizedReasoningEffort: ReasoningEffort | undefined
+      try {
+        const reasoningEffort = normalizeReasoningEffort(data.reasoning_effort)
+        normalizedReasoningEffort = reasoningEffort || undefined
+        if (reasoningEffort) data.reasoning_effort = reasoningEffort
+        else delete data.reasoning_effort
+      } catch (err) {
+        socket.emit('run.failed', {
+          event: 'run.failed',
+          session_id: data.session_id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       let runProfile: string
       try {
         runProfile = resolveRunProfile(data.session_id, data.profile)
@@ -261,6 +277,23 @@ export class ChatRunSocket {
           error: err instanceof Error ? err.message : String(err),
         })
         return
+      }
+      if (normalizedReasoningEffort) {
+        try {
+          data.reasoning_effort = await validateReasoningEffortForProfile({
+            profile: runProfile,
+            provider: data.provider || '',
+            model: data.model || '',
+            apiMode: data.apiMode || data.api_mode || '',
+            reasoningEffort: normalizedReasoningEffort,
+          }) || undefined
+        } catch (err) {
+          socket.emit('run.failed', {
+            event: 'run.failed', session_id: data.session_id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return
+        }
       }
       if (data.session_id) {
         const state = getOrCreateSession(this.sessionMap, data.session_id)
@@ -319,6 +352,7 @@ export class ChatRunSocket {
             mcpServers: data.mcpServers,
             mcp_servers: data.mcp_servers,
             commandPassthrough: data.allow_command_passthrough,
+            reasoningEffort: normalizedReasoningEffort,
             originSocketId: socket.id,
           })
           this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
@@ -457,6 +491,7 @@ export class ChatRunSocket {
       mcp_servers?: Record<string, unknown>
       one_shot_model?: boolean
       allow_command_passthrough?: boolean
+      reasoning_effort?: string
       onEvent?: (event: string, payload: any) => void
     },
     profile: string,
@@ -706,6 +741,7 @@ export class ChatRunSocket {
       mcp_servers: next.mcp_servers,
       one_shot_model: next.oneShotModel,
       allow_command_passthrough: next.commandPassthrough,
+      reasoning_effort: next.reasoningEffort,
     }, next.profile || fallbackProfile, skipUserMessage)
   }
 
@@ -744,7 +780,19 @@ export class ChatRunSocket {
   ): Promise<ChatRunAndWaitResult> {
     const sessionId = String(data.session_id || '').trim()
     if (!sessionId) throw new Error('session_id is required')
+    const reasoningEffort = normalizeReasoningEffort(data.reasoning_effort)
+    if (reasoningEffort) data.reasoning_effort = reasoningEffort
+    else delete data.reasoning_effort
     const profile = options.profile || data.profile || getSession(sessionId)?.profile || getActiveProfileName() || 'default'
+    if (reasoningEffort) {
+      data.reasoning_effort = await validateReasoningEffortForProfile({
+        profile,
+        provider: data.provider || '',
+        model: data.model || '',
+        apiMode: data.apiMode || data.api_mode || '',
+        reasoningEffort,
+      }) || undefined
+    }
     const source = resolveRunSource(data.source, sessionId)
     const state = getOrCreateSession(this.sessionMap, sessionId)
     state.events = []

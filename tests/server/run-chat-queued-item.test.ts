@@ -5,6 +5,7 @@ const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
 const ensureReadyMock = vi.hoisted(() => vi.fn())
+const validateReasoningEffortMock = vi.hoisted(() => vi.fn(async (input: any) => input.reasoningEffort || ''))
 const sessionCommandMocks = vi.hoisted(() => ({
   handleSessionCommand: vi.fn(),
   isSessionCommand: vi.fn(() => false),
@@ -32,6 +33,10 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/load-state', () => (
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run', () => ({
   handleCodingAgentRun: handleCodingAgentRunMock,
+}))
+
+vi.mock('../../packages/server/src/services/reasoning-capability', () => ({
+  validateReasoningEffortForProfile: validateReasoningEffortMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', () => sessionCommandMocks)
@@ -106,6 +111,7 @@ function makeServerHarness() {
 describe('ChatRunSocket queued bridge runs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    validateReasoningEffortMock.mockImplementation(async (input: any) => input.reasoningEffort || '')
     ensureReadyMock.mockResolvedValue({
       reachable: true,
       status: 'ready',
@@ -122,6 +128,58 @@ describe('ChatRunSocket queued bridge runs', () => {
       events: [],
       queue: [],
     })
+  })
+
+  it('rejects unsupported socket effort before bridge dispatch or queue mutation', async () => {
+    validateReasoningEffortMock.mockRejectedValueOnce(new Error('reasoning_effort_unsupported: max'))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).onConnection(socket)
+
+    await handlers.get('run')?.({
+      session_id: 'session-1', input: 'hello', source: 'cli', profile: 'default',
+      provider: 'p', model: 'm', apiMode: 'responses', reasoning_effort: 'max',
+    })
+
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith({
+      profile: 'default', provider: 'p', model: 'm', apiMode: 'responses', reasoningEffort: 'max',
+    })
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect((server as any).sessionMap.get('session-1')).toBeUndefined()
+    expect(socket.emit).toHaveBeenCalledWith('run.failed', expect.objectContaining({
+      error: expect.stringContaining('reasoning_effort_unsupported'),
+    }))
+  })
+
+  it('validates runAndWait before creating in-memory run state and preserves exact effort', async () => {
+    validateReasoningEffortMock.mockResolvedValueOnce('max')
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, _socket, data) => {
+      expect(data.reasoning_effort).toBe('max')
+      data.onEvent?.('run.completed', { run_id: 'capability-run', output: 'ok' })
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    const result = await server.runAndWait({
+      session_id: 'session-1', input: 'workflow', source: 'workflow',
+      provider: 'p', model: 'm', apiMode: 'responses', reasoning_effort: 'max',
+    }, { profile: 'default' })
+    expect(result.ok).toBe(true)
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith(expect.objectContaining({ reasoningEffort: 'max' }))
+  })
+
+  it('rejects runAndWait capability failures before backend dispatch', async () => {
+    validateReasoningEffortMock.mockRejectedValueOnce(new Error('reasoning_capability_unknown: p/m/responses'))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    await expect(server.runAndWait({
+      session_id: 'session-1', input: 'workflow', source: 'workflow',
+      provider: 'p', model: 'm', apiMode: 'responses', reasoning_effort: 'max',
+    }, { profile: 'default' })).rejects.toThrow(/reasoning_capability_unknown/)
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect((server as any).sessionMap.get('session-1')).toBeUndefined()
   })
 
   it('dispatches unknown slash bridge input through the normal bridge run path', async () => {

@@ -35,6 +35,50 @@ export interface WorkflowUpdateRequest {
   viewport?: WorkflowViewport
 }
 
+
+export interface WorkflowPortableDocument {
+  schema: 'hermes-studio.workflow'
+  version: 1
+  workflow: Record<string, unknown>
+  dependencies: WorkflowDocumentDependencies
+}
+
+export interface WorkflowDocumentDependencies {
+  agents: string[]
+  providers: string[]
+  models: Array<{ provider: string; model: string; apiMode: string }>
+  skills: Array<{ agent: string; name: string }>
+}
+
+export interface WorkflowImportMissingDependencies {
+  profiles: string[]
+  agents: string[]
+  providers: string[]
+  models: Array<{ provider: string; model: string; apiMode: string }>
+  skills: Array<{ agent: string; name: string }>
+}
+
+export interface WorkflowImportPreviewToken {
+  previewId: string
+  documentDigest: string
+  expiresAt: number
+  preview: WorkflowImportPreview
+}
+
+export interface WorkflowImportPreview {
+  canImport: boolean
+  missing: WorkflowImportMissingDependencies
+  warnings: string[]
+  resolvedWorkflow: {
+    name: string
+    profile: string
+    workspace: null
+    nodes: unknown[]
+    edges: unknown[]
+    viewport: WorkflowViewport | Record<string, unknown> | null
+  }
+}
+
 export interface WorkflowBatchDeleteResult {
   deleted: number
   failed: number
@@ -44,6 +88,50 @@ export interface WorkflowBatchDeleteResult {
 export type WorkflowRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
 export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'skipped' | 'canceled'
 export type WorkflowRunEdgeResultStatus = 'taken' | 'not_taken' | 'error'
+
+export interface WorkflowIterationPathEntry { loopId: string; iteration: number }
+
+export interface WorkflowRunNodeExecutionRecord {
+  execution_id: string
+  run_id: string
+  workflow_id: string
+  node_id: string
+  session_id: string | null
+  profile: string
+  agent: string
+  agent_mode: string
+  iteration_path: WorkflowIterationPathEntry[]
+  status: WorkflowRunNodeStatus
+  reason: string
+  sequence: number
+  started_at: number | null
+  finished_at: number | null
+  created_at: number
+  updated_at: number
+  error: string | null
+}
+
+export interface WorkflowRunEdgeEvaluationRecord {
+  id: string
+  source_execution_id?: string | null
+  consumed_by_execution_id?: string | null
+  edge_id: string
+  iteration_path: WorkflowIterationPathEntry[]
+  status: WorkflowRunEdgeResultStatus
+  delivery_status: 'pending' | 'delivered' | 'suppressed'
+  reason: string
+  sequence: number
+}
+
+export interface WorkflowRunLoopIterationRecord {
+  id: string
+  loop_id: string
+  iteration_path: WorkflowIterationPathEntry[]
+  iteration: number
+  status: 'running' | 'retrying' | 'completed' | 'failed' | 'canceled'
+  sequence: number
+  error: string | null
+}
 
 export interface WorkflowRunRecord {
   id: string
@@ -59,6 +147,12 @@ export interface WorkflowRunRecord {
   created_at: number
   updated_at?: number
   error: string | null
+  orchestration_version?: number
+  terminal_code?: string | null
+  execution_count?: number
+  node_executions?: WorkflowRunNodeExecutionRecord[]
+  edge_evaluations?: WorkflowRunEdgeEvaluationRecord[]
+  loop_iterations?: WorkflowRunLoopIterationRecord[]
   node_sessions?: WorkflowRunNodeSessionRecord[]
   edge_results?: WorkflowRunEdgeResultRecord[]
   node_states: Record<string, WorkflowRunNodeState>
@@ -108,6 +202,8 @@ export interface WorkflowRunNowRequest {
   start_node_ids?: string[]
   input?: string | null
   timeout_ms?: number
+  total_timeout_ms?: number
+  execution_budget?: number
 }
 
 export interface WorkflowRerunFromNodeRequest {
@@ -220,4 +316,23 @@ export async function rerunWorkflowRunFromNode(
       }),
     },
   )
+}
+
+
+export async function exportWorkflowDefinition(id: string): Promise<WorkflowPortableDocument> {
+  return request<WorkflowPortableDocument>(`/api/hermes/workflows/${encodeURIComponent(id)}/export`)
+}
+
+export async function previewWorkflowImport(document: unknown, profile: string): Promise<WorkflowImportPreviewToken> {
+  return request<WorkflowImportPreviewToken>('/api/hermes/workflows/import/preview', {
+    method: 'POST',
+    body: JSON.stringify({ document, profile }),
+  })
+}
+
+export async function confirmWorkflowImport(previewId: string, documentDigest: string): Promise<{ workflow: WorkflowRecord; warnings: string[] }> {
+  return request<{ workflow: WorkflowRecord; warnings: string[] }>('/api/hermes/workflows/import/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ previewId, documentDigest, confirmed: true }),
+  })
 }

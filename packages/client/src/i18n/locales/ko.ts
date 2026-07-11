@@ -1959,6 +1959,35 @@ export default {
     noData: '사용량 데이터 없음',
   },
 
+  workflow: {
+    orchestration: {
+      feedbackLoop: '피드백 루프',
+      maxIterations: '최대 반복 횟수',
+    },
+    runs: {
+      iterationHistory: '반복 이력',
+    },
+    portability: {
+      export: '내보내기',
+      import: '가져오기',
+      previewTitle: '가져오기 미리보기',
+      exportFailed: '내보내기 실패',
+      importFailed: '가져오기 실패',
+      imported: '워크플로를 가져왔습니다',
+      invalidJson: '잘못된 워크플로 JSON',
+      tooLarge: '워크플로 파일이 1 MiB를 초과합니다',
+      missing: '누락된 종속성',
+      warnings: '경고',
+      profiles: '프로필',
+      agents: '에이전트',
+      providers: '공급자',
+      models: '모델',
+      skills: '스킬',
+      inactiveNotice: '가져오기는 실행되지 않은 새 워크플로를 만들며 자동으로 시작하지 않습니다.',
+      confirmImport: '가져오기 확인',
+    },
+  },
+
   skillsUsage: {
     title: '스킬 사용량',
     subtitle: 'Hermes 세션의 스킬 로드와 편집을 추적합니다',

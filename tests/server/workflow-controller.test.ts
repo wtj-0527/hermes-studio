@@ -5,19 +5,25 @@ const managerMock = vi.hoisted(() => ({
   deleteRun: vi.fn(),
   rerunFromNode: vi.fn(),
   validateRerunFromNode: vi.fn(),
+  preflightRerunFromNode: vi.fn(),
   runNow: vi.fn(),
   prepareRun: vi.fn(),
+  preflightPreparedRun: vi.fn(),
   runPrepared: vi.fn(),
   stopRun: vi.fn(),
 }))
 const getWorkflowRunMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunNodeSessionsMock = vi.hoisted(() => vi.fn())
+const listWorkflowRunNodeExecutionsMock = vi.hoisted(() => vi.fn())
+const listWorkflowRunEdgeEvaluationsMock = vi.hoisted(() => vi.fn())
+const listWorkflowRunLoopIterationsMock = vi.hoisted(() => vi.fn())
 const listUserProfilesMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../../packages/server/src/services/workflow-manager', () => ({
-  getWorkflowManager: () => managerMock,
-}))
+vi.mock('../../packages/server/src/services/workflow-manager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../packages/server/src/services/workflow-manager')>()
+  return { ...actual, getWorkflowManager: () => managerMock }
+})
 
 vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
   listUserProfiles: listUserProfilesMock,
@@ -26,6 +32,9 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 vi.mock('../../packages/server/src/db/hermes/workflow-run-store', () => ({
   getWorkflowRun: getWorkflowRunMock,
   listWorkflowRunNodeSessions: listWorkflowRunNodeSessionsMock,
+  listWorkflowRunNodeExecutions: listWorkflowRunNodeExecutionsMock,
+  listWorkflowRunEdgeEvaluations: listWorkflowRunEdgeEvaluationsMock,
+  listWorkflowRunLoopIterations: listWorkflowRunLoopIterationsMock,
   listWorkflowRuns: listWorkflowRunsMock,
 }))
 
@@ -47,13 +56,18 @@ describe('workflow controller', () => {
     managerMock.deleteRun.mockReset()
     managerMock.rerunFromNode.mockReset()
     managerMock.validateRerunFromNode.mockReset()
+    managerMock.preflightRerunFromNode.mockReset().mockResolvedValue(undefined)
     managerMock.runNow.mockReset()
     managerMock.prepareRun.mockReset()
     managerMock.prepareRun.mockReturnValue({ workflow: { id: 'workflow-1' }, compiled: {} })
+    managerMock.preflightPreparedRun.mockReset().mockResolvedValue(undefined)
     managerMock.runPrepared.mockReset()
     managerMock.stopRun.mockReset()
     getWorkflowRunMock.mockReset()
     listWorkflowRunNodeSessionsMock.mockReset()
+    listWorkflowRunNodeExecutionsMock.mockReset().mockReturnValue([])
+    listWorkflowRunEdgeEvaluationsMock.mockReset().mockReturnValue([])
+    listWorkflowRunLoopIterationsMock.mockReset().mockReturnValue([])
     listWorkflowRunsMock.mockReset()
     listUserProfilesMock.mockReset()
     listUserProfilesMock.mockReturnValue([])
@@ -76,6 +90,30 @@ describe('workflow controller', () => {
       edge_results: [{ edge_id: 'e1', status: 'taken' }],
       node_sessions: [{ node_id: 'node-1', status: 'completed' }],
     } })
+  })
+
+  it('returns append-only execution, edge, and loop evidence for v2 run detail', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    getWorkflowRunMock.mockReturnValue({
+      id: 'run-v2', workflow_id: 'workflow-1', status: 'completed', orchestration_version: 2,
+      edge_results: [],
+    })
+    listWorkflowRunNodeSessionsMock.mockReturnValue([])
+    listWorkflowRunNodeExecutionsMock.mockReturnValue([{ execution_id: 'x1', node_id: 'a', iteration_path: [{ loopId: 'loop:r', iteration: 1 }] }])
+    listWorkflowRunEdgeEvaluationsMock.mockReturnValue([{ id: 'e1', edge_id: 'retry', delivery_status: 'delivered' }])
+    listWorkflowRunLoopIterationsMock.mockReturnValue([{ id: 'l1', loop_id: 'loop:r', iteration: 1 }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-v2' } })
+    await mod.getRun(c)
+
+    expect(c.body).toEqual({ run: expect.objectContaining({
+      id: 'run-v2',
+      node_sessions: [],
+      node_executions: [{ execution_id: 'x1', node_id: 'a', iteration_path: [{ loopId: 'loop:r', iteration: 1 }] }],
+      edge_evaluations: [{ id: 'e1', edge_id: 'retry', delivery_status: 'delivered' }],
+      loop_iterations: [{ id: 'l1', loop_id: 'loop:r', iteration: 1 }],
+    }) })
   })
 
   it('lists run records for a workflow', async () => {
@@ -109,7 +147,10 @@ describe('workflow controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({
       params: { id: 'workflow-1' },
-      request: { body: { start_node_ids: ['node-1', 12, 'node-2'], input: 'go', timeout_ms: '1000' } },
+      request: { body: {
+        start_node_ids: ['node-1', 12, 'node-2'], input: 'go', timeout_ms: '1000',
+        total_timeout_ms: '60000', execution_budget: '25',
+      } },
       state: { user },
     })
 
@@ -122,9 +163,48 @@ describe('workflow controller', () => {
       startNodeIds: ['node-1', 'node-2'],
       input: 'go',
       timeoutMs: 1000,
+      totalTimeoutMs: 60000,
+      executionBudget: 25,
     })
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
+  })
+
+  it('rejects reasoning capability synchronously before accepting a detached run', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    const prepared = { workflow: { id: 'workflow-1' }, compiled: { loops: [] }, startNodeIds: ['node-1'] }
+    managerMock.prepareRun.mockReturnValue(prepared)
+    const error: any = new Error('reasoning_capability_unknown: no authoritative metadata')
+    error.status = 400
+    managerMock.preflightPreparedRun.mockRejectedValue(error)
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' }, request: { body: {} } })
+
+    await mod.runNow(c)
+
+    expect(managerMock.preflightPreparedRun).toHaveBeenCalledWith(prepared, {
+      profile: 'default',
+      user: undefined,
+    })
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'reasoning_capability_unknown: no authoritative metadata' })
+    expect(managerMock.runPrepared).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 synchronously for invalid v2 run safety limits', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.prepareRun.mockReturnValue({ workflow: { id: 'workflow-1' }, compiled: { loops: [{ id: 'loop:retry' }] } })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({
+      params: { id: 'workflow-1' },
+      request: { body: { total_timeout_ms: 86_400_001, execution_budget: 1.5 } },
+    })
+
+    await mod.runNow(c)
+
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: expect.stringMatching(/totalTimeoutMs|executionBudget/) })
+    expect(managerMock.runPrepared).not.toHaveBeenCalled()
   })
 
   it('returns 400 synchronously for unknown explicit start node ids', async () => {
@@ -181,6 +261,12 @@ describe('workflow controller', () => {
     await mod.rerunFromNode(c)
 
     expect(managerMock.validateRerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1')
+    expect(managerMock.preflightRerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-2', {
+      profile: 'default',
+      user,
+      preserveStartNode: true,
+      timeoutMs: 1000,
+    })
     expect(managerMock.rerunFromNode).toHaveBeenCalledWith('workflow-1', 'run-1', 'node-2', {
       profile: 'default',
       user,
@@ -189,6 +275,19 @@ describe('workflow controller', () => {
     })
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
+  })
+
+  it('rejects rerun capability preflight synchronously before acceptance or mutation', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.preflightRerunFromNode.mockRejectedValue(Object.assign(new Error('workflow_model_unavailable: unavailable model tuple'), { status: 400 }))
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' }, request: { body: { node_id: 'node-2' } } })
+
+    await mod.rerunFromNode(c)
+
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'workflow_model_unavailable: unavailable model tuple' })
+    expect(managerMock.rerunFromNode).not.toHaveBeenCalled()
   })
 
   it('returns orchestration v1 rerun rejection synchronously instead of accepting a no-op', async () => {

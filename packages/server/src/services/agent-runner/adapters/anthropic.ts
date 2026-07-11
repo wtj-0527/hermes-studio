@@ -1,3 +1,5 @@
+import { normalizeReasoningEffort } from '../../../../../shared/reasoning-effort'
+
 export interface AnthropicAdapterTarget {
   provider: string
   model: string
@@ -5,8 +7,7 @@ export interface AnthropicAdapterTarget {
 }
 
 export function targetReasoningEffort(target: any): string {
-  const effort = String(target?.reasoningEffort || '').trim()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : ''
+  return normalizeReasoningEffort(target?.reasoningEffort)
 }
 
 function stringifyContent(value: unknown): string {

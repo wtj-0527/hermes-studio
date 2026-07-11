@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../lib/context-compressor'
+import type { ReasoningEffort } from '../../../../../shared/reasoning-effort'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -56,6 +57,7 @@ export interface QueuedRun {
   commandPassthrough?: boolean
   originSocketId?: string
   goalContinuation?: boolean
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface SessionState {

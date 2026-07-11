@@ -14,6 +14,7 @@ import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { isKnownBridgeSessionCommand } from '@/utils/hermes/bridge-session-commands'
 import { responseErrorMessage } from '@/utils/http-error'
+import { normalizeReasoningEffort, type ReasoningEffort } from '../../../../shared/reasoning-effort'
 
 // Re-export ContentBlock for convenience
 export type ContentBlock = ContentBlockImport
@@ -143,7 +144,7 @@ export interface Session {
   /** Per-session reasoning effort override.
    * Empty string / undefined = use config.yaml default.
    * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' */
-  reasoningEffort?: string
+  reasoningEffort?: ReasoningEffort
 }
 
 interface CompressionState {
@@ -3909,7 +3910,8 @@ export const useChatStore = defineStore('chat', () => {
   function setSessionReasoningEffort(sessionId: string, effort: string) {
     const session = sessions.value.find(s => s.id === sessionId)
     if (!session) return
-    session.reasoningEffort = effort || undefined
+    const normalizedEffort = normalizeReasoningEffort(effort)
+    session.reasoningEffort = normalizedEffort || undefined
     try {
       if (effort) {
         localStorage.setItem(REASONING_LS_PREFIX + sessionId, effort)
@@ -3920,9 +3922,10 @@ export const useChatStore = defineStore('chat', () => {
       // localStorage may be unavailable (private mode); silently ignore
     }
   }
-  function getStoredReasoningEffort(sessionId: string): string | undefined {
+  function getStoredReasoningEffort(sessionId: string): ReasoningEffort | undefined {
     try {
-      return localStorage.getItem(REASONING_LS_PREFIX + sessionId) || undefined
+      const stored = localStorage.getItem(REASONING_LS_PREFIX + sessionId)
+      return normalizeReasoningEffort(stored || undefined) || undefined
     } catch {
       return undefined
     }

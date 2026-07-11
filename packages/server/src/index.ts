@@ -28,6 +28,7 @@ import { scanLanDevices, startLanDiscoveryResponder } from './services/lan-disco
 import { getLanPeerSocketManager, getLanPeerSocketPath } from './services/lan-peer-socket'
 import { startGlobalAgentServer } from './services/global-agent/server'
 import { WorkflowSocketServer } from './services/workflow-socket'
+import { getWorkflowManager } from './services/workflow-manager'
 import { PetStateSocketServer } from './services/hermes/pet-state-socket'
 import { logger } from './services/logger'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
@@ -340,6 +341,14 @@ export async function bootstrap() {
   chatRunServer = new ChatRunSocket(groupChatServer.getIO())
   setChatRunServer(chatRunServer)
   chatRunServer.init()
+
+  // A v2 scheduler cannot safely reconstruct in-memory tokens, held exits, and
+  // runtime ownership after process restart. Fail stale active runs closed only
+  // after ChatRun is registered, so surviving sessions can be aborted by owner.
+  const recoveredWorkflowRuns = await getWorkflowManager().recoverOrphanedV2Runs()
+  if (recoveredWorkflowRuns.runs > 0) {
+    logger.warn(recoveredWorkflowRuns, '[workflow] terminalized orphaned v2 runs after server restart')
+  }
 
   workflowSocketServer = new WorkflowSocketServer(groupChatServer.getIO())
   workflowSocketServer.init()

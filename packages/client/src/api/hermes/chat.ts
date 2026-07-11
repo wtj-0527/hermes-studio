@@ -2,6 +2,7 @@ import { io, type Socket } from 'socket.io-client'
 import { getBaseUrlValue, getApiKey } from '../client'
 import type { ChatCodingAgentId } from '../coding-agents'
 import type { ProviderApiMode } from './system'
+import type { ReasoningEffort } from '../../../../shared/reasoning-effort'
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -38,7 +39,7 @@ export interface StartRunRequest {
   mcp_servers?: Record<string, unknown>
   /** Per-session reasoning effort override.
    * Empty/undefined = use config.yaml default. */
-  reasoning_effort?: string
+  reasoning_effort?: ReasoningEffort
 }
 
 export interface StartRunResponse {

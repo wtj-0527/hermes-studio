@@ -9,6 +9,7 @@ import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './typ
 import type { CodingAgentApiMode } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/hermes/system'
 import { getFileDownloadUrl } from '@/api/hermes/files'
+import { REASONING_EFFORT_VALUES, type ReasoningEffortOverride } from '../../../../../shared/reasoning-effort'
 
 import '@vue-flow/node-resizer/dist/style.css'
 
@@ -28,6 +29,13 @@ const statusTip = computed(() => (
     : ''
 ))
 const isCodingAgent = computed(() => props.data.agent !== 'hermes')
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: '' },
+  ...REASONING_EFFORT_VALUES.map(value => ({
+    label: t(`chat.reasoningEffort.options.${value}`),
+    value,
+  })),
+])
 const joinModeOptions = computed(() => [
   { label: t('workflow.orchestration.joinAll'), value: 'all' },
   { label: t('workflow.orchestration.joinAny'), value: 'any' },
@@ -179,6 +187,15 @@ async function uploadImages(files: File[]) {
         :disabled="data.readonly"
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
+      />
+      <NSelect
+        data-testid="workflow-reasoning-effort"
+        :value="data.reasoningEffort"
+        :options="reasoningEffortOptions"
+        size="small"
+        :disabled="data.readonly"
+        :placeholder="t('chat.reasoningEffort.tooltip')"
+        @update:value="value => updateField('reasoningEffort', value as ReasoningEffortOverride)"
       />
       <NSelect
         :value="data.joinMode"

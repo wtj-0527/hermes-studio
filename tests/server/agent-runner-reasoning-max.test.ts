@@ -55,4 +55,9 @@ describe('coding-agent proxy reasoning effort', () => {
       reasoning_effort: 'max',
     })
   })
+
+  it.each(['ultra', 'MAX', null, 3])('rejects invalid explicit effort %j instead of silently dropping it', (reasoningEffort) => {
+    expect(() => targetAnthropicReasoningEffort({ ...anthropicTarget, reasoningEffort })).toThrow(/reasoning effort/i)
+    expect(() => targetResponsesReasoningEffort({ ...responsesTarget, reasoningEffort })).toThrow(/reasoning effort/i)
+  })
 })

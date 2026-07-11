@@ -7,6 +7,8 @@ import {
   normalizeWorkflowJoinMode,
   withWorkflowEdgeOrchestration,
   legacyWorkflowEdgeId,
+  hasUnmarkedWorkflowCycle,
+  MAX_WORKFLOW_LOOP_ITERATIONS,
 } from '../../packages/client/src/components/hermes/workflow/orchestration'
 
 describe('workflow orchestration client contract', () => {
@@ -73,6 +75,44 @@ describe('workflow orchestration client contract', () => {
       expect(() => normalizeWorkflowEdgeOrchestration({ route: 'success', condition: { path, operator: 'truthy' } })).toThrow('path')
       expect(() => buildWorkflowEdgeOrchestration('success', true, path, 'truthy', undefined)).toThrow('path')
     }
+  })
+
+
+  it('normalizes bounded feedback policy exactly like the server', () => {
+    expect(normalizeWorkflowEdgeOrchestration({
+      route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 3 },
+    })).toEqual({
+      route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 3 },
+    })
+    for (const loop of [null, {}, { maxIterations: 0 }, { maxIterations: 1.5 }, { maxIterations: '3' }, { maxIterations: MAX_WORKFLOW_LOOP_ITERATIONS + 1 }, { maxIterations: 3, extra: true }]) {
+      expect(() => normalizeWorkflowEdgeOrchestration({
+        route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop,
+      })).toThrow()
+    }
+    expect(() => normalizeWorkflowEdgeOrchestration({ route: 'success', loop: { maxIterations: 3 } })).toThrow('condition')
+  })
+
+  it('builds and labels explicit bounded feedback edges', () => {
+    const policy = buildWorkflowEdgeOrchestration('success', true, 'json.retry', 'truthy', undefined, true, 4)
+    expect(policy).toEqual({
+      route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 4 },
+    })
+    expect(edgeOrchestrationLabel(policy)).toBe('success · json.retry truthy · loop max 4')
+    expect(() => buildWorkflowEdgeOrchestration('success', false, '', 'truthy', undefined, true, 4)).toThrow('condition')
+  })
+
+  it('accepts only cycles that disappear after explicit feedback edges are removed', () => {
+    const nodes = [{ id: 'a' }, { id: 'b' }]
+    const forward = { id: 'a-b', source: 'a', target: 'b', data: { orchestration: { route: 'success' } } }
+    const marked = {
+      id: 'retry', source: 'b', target: 'a',
+      data: { orchestration: { route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 3 } } },
+    }
+    const unmarked = { id: 'back', source: 'b', target: 'a', data: { orchestration: { route: 'success' } } }
+    expect(hasUnmarkedWorkflowCycle(nodes, [forward, marked])).toBe(false)
+    expect(hasUnmarkedWorkflowCycle(nodes, [forward, unmarked])).toBe(true)
+    expect(hasUnmarkedWorkflowCycle([{ id: 'a' }], [{ ...marked, source: 'a', target: 'a' }])).toBe(false)
+    expect(hasUnmarkedWorkflowCycle([{ id: 'a' }], [{ id: 'self', source: 'a', target: 'a' }])).toBe(true)
   })
 
 })

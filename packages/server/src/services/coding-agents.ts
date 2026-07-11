@@ -19,6 +19,8 @@ import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { getSession, updateSession, type HermesSessionRow } from '../db/hermes/session-store'
 import type { SessionState } from './hermes/run-chat/types'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell, type WindowsCommandExecution } from './windows-command'
+import { normalizeReasoningEffort } from '../../../shared/reasoning-effort'
+import { validateReasoningEffortForProfile } from './reasoning-capability'
 
 const execFileAsync = promisify(execFile)
 const LAUNCH_API_MODES = new Set<ApiMode>(['chat_completions', 'codex_responses', 'anthropic_messages'])
@@ -1645,7 +1647,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     }
   }
 
-  const provider = normalizeScopeSegment(input.provider, 'default', 'provider')
+  const provider = String(input.provider || '').trim() || 'default'
   const scope = normalizeConfigScope({ profile: input.profile, provider })
   const model = String(input.model || '').trim()
   const apiKey = String(input.apiKey || '').trim()
@@ -1659,7 +1661,12 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   const baseUrl = String(input.baseUrl || '').trim()
   const preset = PROVIDER_PRESETS.find(item => item.value === provider)
   const apiMode = normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
-  const reasoningEffort = String(input.reasoningEffort || '').trim()
+  const normalizedReasoningEffort = normalizeReasoningEffort(input.reasoningEffort)
+  const reasoningEffort = normalizedReasoningEffort
+    ? await validateReasoningEffortForProfile({
+        profile: scope.profile, provider, model, apiMode, reasoningEffort: normalizedReasoningEffort,
+      })
+    : ''
   const rootDir = getScopedConfigRoot(tool.id, scope)
   const workspaceDir = resolveLaunchWorkspaceRoot(scope, input.workspace)
   await mkdir(rootDir, { recursive: true })
@@ -1823,7 +1830,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     agentId: tool.id,
     mode,
     profile: scope.profile,
-    provider: scope.provider,
+    provider,
     model,
     apiMode,
     rootDir,

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { REASONING_EFFORT_VALUES } from '../../../../../shared/reasoning-effort'
 import type { Attachment } from '@/stores/hermes/chat'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
@@ -42,13 +43,10 @@ const emit = defineEmits<{
 
 const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.default'), value: '' },
-  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
-  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
-  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
-  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
-  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
-  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
-  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
+  ...REASONING_EFFORT_VALUES.map(value => ({
+    label: t(`chat.reasoningEffort.options.${value}`),
+    value,
+  })),
 ])
 const currentReasoningEffort = computed<string>(() =>
   chatStore.activeSession?.reasoningEffort || ''

@@ -114,6 +114,12 @@ const SKILLS_USAGE_COMPACT_LABEL_LIMITS: Record<string, number> = {
   'skillsUsage.otherSkills': 16,
 }
 
+const WORKFLOW_V2_LOCALIZED_KEYS = [
+  'workflow.orchestration.feedbackLoop',
+  'workflow.orchestration.maxIterations',
+  'workflow.runs.iterationHistory',
+]
+
 const APPROVAL_AND_WRITE_GATE_LOCALIZED_KEYS = [
   'chat.approvalAgree',
   'skills.writeApprovalTitle',
@@ -259,6 +265,20 @@ describe('i18n locale coverage', () => {
     })
 
     expect(untranslated).toEqual([])
+  })
+
+  it('defines localized Workflow v2 loop and history copy in every raw locale', () => {
+    const englishMessages = rawMessages.en
+    const missingOrUntranslated = Object.entries(rawMessages).flatMap(([locale, localeMessages]) =>
+      WORKFLOW_V2_LOCALIZED_KEYS.flatMap((key) => {
+        const localeValue = getPath(localeMessages, key)
+        if (typeof localeValue === 'undefined') return [`${locale}: ${key} missing`]
+        if (locale !== 'en' && localeValue === getPath(englishMessages, key)) return [`${locale}: ${key} untranslated`]
+        return []
+      }),
+    )
+
+    expect(missingOrUntranslated).toEqual([])
   })
 
   it('localizes approval and write-gate copy in every non-English locale instead of falling back to English', () => {
