@@ -33,7 +33,14 @@ vi.mock('../../packages/server/src/services/agent-runner/coding-agent-run-manage
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({ deleteSessionForProfile: vi.fn() }))
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({ listProfileNamesFromDisk: vi.fn(() => []) }))
 vi.mock('../../packages/server/src/services/logger', () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
-vi.mock('../../packages/server/src/controllers/hermes/models', () => ({ getAvailableModelReferencesForProfile: vi.fn(async () => []) }))
+vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
+  getAvailableModelReferencesForProfile: vi.fn(async () => [
+    { provider: 'custom:test', model: 'gpt-test', apiMode: 'chat_completions' },
+  ]),
+  getEffectiveModelReferenceForProfile: vi.fn(async () => (
+    { provider: 'custom:test', model: 'gpt-test', apiMode: 'chat_completions' }
+  )),
+}))
 
 const node = (id: string) => ({ id, type: 'agent', data: { title: id, agent: 'hermes', input: id } })
 const edge = (id: string, source: string, target: string, orchestration?: Record<string, unknown>) => ({

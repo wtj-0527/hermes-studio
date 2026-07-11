@@ -449,13 +449,33 @@ export async function buildAvailableForProfile(
   return { profile, default: currentDefault, default_provider: currentDefaultProvider, groups: groupsWithCustomModels }
 }
 
-export async function getAvailableModelReferencesForProfile(profile: string): Promise<Array<{ provider: string; model: string; apiMode: string }>> {
+export interface EffectiveModelReference { provider: string; model: string; apiMode: string }
+
+async function visibleModelsForProfile(profile: string): Promise<{
+  groups: AvailableGroup[]
+  defaultModel: string
+  defaultProvider: string
+}> {
   const appConfig = await readAppConfig()
   const aliases = normalizeAliases(appConfig.modelAliases)
   const visibility = normalizeModelVisibility(appConfig.modelVisibility)
   const catalogCache = await readProviderModelCatalogCache()
   const result = await buildAvailableForProfile(profile, catalogCache, appConfig)
   const groups = applyModelVisibility(applyModelAliases(result.groups, aliases), visibility)
+  const { defaultModel, defaultProvider } = resolveVisibleDefault(result.default, result.default_provider, groups)
+  return { groups, defaultModel, defaultProvider }
+}
+
+export async function getEffectiveModelReferenceForProfile(profile: string): Promise<EffectiveModelReference | null> {
+  const { groups, defaultModel, defaultProvider } = await visibleModelsForProfile(profile)
+  const group = groups.find(item => item.provider === defaultProvider && item.models.includes(defaultModel))
+  const apiMode = group?.api_mode || ''
+  if (!group || !defaultProvider || !defaultModel || !apiMode) return null
+  return { provider: defaultProvider, model: defaultModel, apiMode }
+}
+
+export async function getAvailableModelReferencesForProfile(profile: string): Promise<Array<{ provider: string; model: string; apiMode: string }>> {
+  const { groups } = await visibleModelsForProfile(profile)
   const references = new Map<string, { provider: string; model: string; apiMode: string }>()
   for (const group of groups) {
     const apiMode = group.api_mode || ''

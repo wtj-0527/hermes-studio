@@ -39,11 +39,20 @@ function nodeWithoutEffort(model = 'gpt-5.6-sol') {
   } }
 }
 
+function nodeWithInheritedTarget(effort: string) {
+  return { id: 'node', type: 'agent', data: {
+    title: 'node', agent: 'hermes', input: 'work', reasoningEffort: effort,
+  } }
+}
+
 function writeConfig(levels?: string[]) {
   const dir = join(state.appHome, 'profiles', 'default')
   mkdirSync(dir, { recursive: true })
   const metadata = levels ? `\n        supported_reasoning_levels: [${levels.join(', ')}]` : ''
-  writeFileSync(join(dir, 'config.yaml'), `providers:\n  test:\n    base_url: https://example.invalid\n    api_mode: codex_responses\n    models:\n      gpt-5.6-sol:${metadata || ' {}'}\n`)
+  writeFileSync(join(dir, 'config.yaml'), `model:
+  default: gpt-5.6-sol
+  provider: custom:test
+providers:\n  test:\n    base_url: https://example.invalid\n    api_mode: codex_responses\n    models:\n      gpt-5.6-sol:${metadata || ' {}'}\n`)
 }
 
 describe('workflow reasoning capability preflight', () => {
@@ -81,6 +90,23 @@ describe('workflow reasoning capability preflight', () => {
     const result = await new WorkflowManager().runNow(supported.id)
     expect(result.run.status).toBe('completed')
     expect(state.runAndWait).toHaveBeenCalledWith(expect.objectContaining({ reasoning_effort: 'max' }), expect.anything())
+  })
+
+  it('resolves the profile default target before validating an inherited node effort', async () => {
+    writeConfig(['max'])
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const workflow = createWorkflow({ name: 'inherited target', profile: 'default', nodes: [nodeWithInheritedTarget('max')] })
+
+    const result = await new WorkflowManager().runNow(workflow.id)
+
+    expect(result.run.status).toBe('completed')
+    expect(state.runAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoning_effort: 'max',
+    }), expect.anything())
+    expect(result.run.snapshot_nodes[0]?.data).toMatchObject({
+      provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoningEffort: 'max',
+    })
   })
 
   it('rejects an unavailable provider/model/apiMode tuple even without an effort override', async () => {

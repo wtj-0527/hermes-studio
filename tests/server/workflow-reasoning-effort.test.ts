@@ -36,6 +36,9 @@ vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
   getAvailableModelReferencesForProfile: vi.fn(async () => [
     { provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses' },
   ]),
+  getEffectiveModelReferenceForProfile: vi.fn(async () => (
+    { provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses' }
+  )),
 }))
 
 function workflowNode(id: string, agent: 'hermes' | 'codex' | 'claude-code', reasoningEffort?: unknown) {

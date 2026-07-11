@@ -7,6 +7,7 @@ import {
   VueFlow,
   useVueFlow,
   type Connection,
+  type OnConnectStartParams,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -119,6 +120,8 @@ interface WorkflowDocument {
 }
 
 const nextNodeIndex = ref(1)
+const pendingConnectionSource = ref<string | null>(null)
+const connectionCompletedSinceStart = ref(false)
 const contextMenuVisible = ref(false)
 const edgeEditorVisible = ref(false)
 const edgeRoute = ref<WorkflowRoute>('success')
@@ -1528,21 +1531,74 @@ function expandNodeHeightForImages(style: WorkflowNode['style'], imageCount: num
   return { ...style, height: `${requiredHeight}px` }
 }
 
-function handleConnect(connection: Connection) {
-  if (selectedWorkflowRunId.value) return
-  if (!isValidWorkflowConnection(connection)) return
+function appendWorkflowEdge(connection: Connection): boolean {
+  if (!isValidWorkflowConnection(connection)) return false
   const exists = edges.value.some(edge => edge.source === connection.source && edge.target === connection.target)
-  if (exists) return
-
+  if (exists) return false
+  const orchestration: WorkflowEdgeOrchestration = { route: 'success' }
   edges.value = [...edges.value, {
     ...connection,
     id: `${connection.source}-${connection.target}`,
     type: 'smoothstep',
     animated: true,
-    data: { orchestration: { route: 'success' } },
-    label: 'success',
+    data: { orchestration },
+    label: edgeOrchestrationLabel(orchestration),
     markerEnd: MarkerType.ArrowClosed,
   }]
+  return true
+}
+
+function handleConnect(connection: Connection) {
+  if (selectedWorkflowRunId.value) return
+  connectionCompletedSinceStart.value = isValidWorkflowConnection(connection)
+  appendWorkflowEdge(connection)
+}
+
+function handleConnectStart(payload: { event?: MouseEvent | TouchEvent } & OnConnectStartParams) {
+  pendingConnectionSource.value = null
+  connectionCompletedSinceStart.value = false
+  if (selectedWorkflowRunId.value) return
+  if (payload.handleType !== 'source' || payload.handleId !== 'output' || !payload.nodeId) return
+  pendingConnectionSource.value = payload.nodeId
+}
+
+function workflowReleasePoint(event?: MouseEvent | TouchEvent): { x: number; y: number } | null {
+  if (!event) return null
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches[0]
+    return touch ? { x: touch.clientX, y: touch.clientY } : null
+  }
+  return { x: event.clientX, y: event.clientY }
+}
+
+function isEmptyWorkflowCanvasRelease(event: MouseEvent | TouchEvent | undefined, point: { x: number; y: number }): boolean {
+  const rect = workflowCanvasRef.value?.getBoundingClientRect()
+  if (!rect || point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) return false
+  const target = event?.target instanceof Element ? event.target : null
+  return !target?.closest('.vue-flow__node, .vue-flow__edge, .vue-flow__controls, .vue-flow__minimap')
+}
+
+async function handleConnectEnd(event?: MouseEvent | TouchEvent) {
+  const source = pendingConnectionSource.value
+  pendingConnectionSource.value = null
+  if (selectedWorkflowRunId.value || !source) return
+  if (connectionCompletedSinceStart.value) return
+  const point = workflowReleasePoint(event)
+  if (!point || !isEmptyWorkflowCanvasRelease(event, point)) return
+  const index = nextNodeIndex.value
+  const id = `agent-${index}`
+  const flowPoint = screenToFlowCoordinate(point)
+  const node = makeNode(
+    id,
+    t('workflow.newNodeTitle', { count: index }),
+    { x: flowPoint.x + 24, y: flowPoint.y - 210 },
+    { agent: 'hermes' },
+  )
+  nodes.value = [...nodes.value, node]
+  nextNodeIndex.value += 1
+  appendWorkflowEdge({ source, sourceHandle: 'output', target: id, targetHandle: 'input' })
+  ensureSkillOptionsForVisibleNodes()
+  await nextTick()
 }
 
 function openEdgeEditor(edgeId: string) {
@@ -1609,6 +1665,13 @@ function handleNodeContextMenu(payload: { event: MouseEvent | TouchEvent; node: 
 function handleNodeClick(payload: { node: { id: string } }) {
   if (!selectedWorkflowRunId.value) return
   void openWorkflowNodeSession(payload.node.id)
+}
+
+function handleEdgeClick(payload: { event: MouseEvent | TouchEvent; edge: { id: string } }) {
+  if (selectedWorkflowRunId.value) return
+  payload.event.stopPropagation()
+  contextMenuTarget.value = { type: 'edge', id: payload.edge.id }
+  openEdgeEditor(payload.edge.id)
 }
 
 function handleEdgeContextMenu(payload: { event: MouseEvent | TouchEvent; edge: { id: string } }) {
@@ -2072,8 +2135,11 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           :default-edge-options="{ type: 'smoothstep', markerEnd: MarkerType.ArrowClosed }"
           class="workflow-flow"
           @connect="handleConnect"
+          @connect-start="handleConnectStart"
+          @connect-end="handleConnectEnd"
           @node-click="handleNodeClick"
           @node-context-menu="handleNodeContextMenu"
+          @edge-click="handleEdgeClick"
           @edge-context-menu="handleEdgeContextMenu"
           @pane-click="closeContextMenu"
         >

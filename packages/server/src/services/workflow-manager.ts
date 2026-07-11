@@ -568,19 +568,51 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         }
       }
     }
-    await this.preflightWorkflowNodes(profile, activeNodes)
+    const resolvedNodes = await this.resolveWorkflowNodeTargets(profile, nodes, activeIds)
+    const resolvedById = new Map(resolvedNodes.map(node => [node.id, node]))
+    compiled.nodes = compiled.nodes.map((rawNode: any) => {
+      const resolved = resolvedById.get(String(rawNode?.id || ''))
+      if (!resolved) return rawNode
+      return {
+        ...rawNode,
+        data: {
+          ...(rawNode?.data && typeof rawNode.data === 'object' ? rawNode.data : {}),
+          provider: resolved.data.provider,
+          model: resolved.data.model,
+          apiMode: resolved.data.apiMode,
+        },
+      }
+    })
   }
 
-  private async preflightWorkflowNodes(profile: string, nodes: WorkflowNodeSnapshot[]): Promise<void> {
-    const { getAvailableModelReferencesForProfile } = await import('../controllers/hermes/models')
-    const available = await getAvailableModelReferencesForProfile(profile)
+  private async resolveWorkflowNodeTargets(
+    profile: string,
+    nodes: WorkflowNodeSnapshot[],
+    validateNodeIds = new Set(nodes.map(node => node.id)),
+  ): Promise<WorkflowNodeSnapshot[]> {
+    const { getAvailableModelReferencesForProfile, getEffectiveModelReferenceForProfile } = await import('../controllers/hermes/models')
+    const [available, effectiveDefault] = await Promise.all([
+      getAvailableModelReferencesForProfile(profile),
+      getEffectiveModelReferenceForProfile(profile),
+    ])
     const keys = new Set(available.map(reference => `${reference.provider}\0${reference.model}\0${reference.apiMode}`))
-    for (const node of nodes) {
-      const provider = String(node.data.provider || '').trim()
-      const model = String(node.data.model || '').trim()
-      const apiMode = String(node.data.apiMode || '').trim()
-      const hasExplicitTarget = Boolean(provider || model || apiMode)
-      if (hasExplicitTarget && (!provider || !model || !apiMode || !keys.has(`${provider}\0${model}\0${apiMode}`))) {
+    const resolvedNodes = nodes.map(node => {
+      let provider = String(node.data.provider || '').trim()
+      let model = String(node.data.model || '').trim()
+      let apiMode = String(node.data.apiMode || '').trim()
+      if (!provider && !model && !apiMode && effectiveDefault) {
+        provider = effectiveDefault.provider
+        model = effectiveDefault.model
+        apiMode = effectiveDefault.apiMode
+      }
+      return { ...node, data: { ...node.data, provider, model, apiMode } }
+    })
+    for (const node of resolvedNodes) {
+      if (!validateNodeIds.has(node.id)) continue
+      const provider = node.data.provider
+      const model = node.data.model
+      const apiMode = node.data.apiMode
+      if (!provider || !model || !apiMode || !keys.has(`${provider}\0${model}\0${apiMode}`)) {
         const err = new Error(`workflow_model_unavailable: ${provider || '(missing)'}/${model || '(missing)'}/${apiMode || '(missing)'}`)
         ;(err as any).code = 'workflow_model_unavailable'
         ;(err as any).status = 400
@@ -591,6 +623,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         profile, provider, model, apiMode, reasoningEffort: node.data.reasoningEffort,
       })
     }
+    return resolvedNodes
   }
 
   async runNow(workflowId: string, input: WorkflowRunNowInput = {}): Promise<WorkflowRunNowResult> {
@@ -1400,8 +1433,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       const err = new Error('chat-run server is not available'); (err as any).status = 503; throw err
     }
     const profile = input.profile?.trim() || run.profile || workflow.profile || 'default'
-    const nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
-    const nodeById = new Map(nodes.map(node => [node.id, node]))
+    let nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    let nodeById = new Map(nodes.map(node => [node.id, node]))
     const targetNodeId = nodeId.trim()
     if (!targetNodeId || !nodeById.has(targetNodeId)) {
       const err = new Error('workflow node not found in run snapshot'); (err as any).status = 404; throw err
@@ -1437,7 +1470,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
         }
       }
     }
-    await this.preflightWorkflowNodes(profile, nodes.filter(node => activeIds.has(node.id)))
+    await this.resolveWorkflowNodeTargets(profile, nodes, activeIds)
   }
 
   async rerunFromNode(
@@ -1457,8 +1490,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     }
 
     const profile = input.profile?.trim() || run.profile || workflow.profile || 'default'
-    const nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
-    const nodeById = new Map(nodes.map(node => [node.id, node]))
+    let nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
+    let nodeById = new Map(nodes.map(node => [node.id, node]))
     const targetNodeId = nodeId.trim()
     if (!targetNodeId || !nodeById.has(targetNodeId)) {
       const err = new Error('workflow node not found in run snapshot')
@@ -1505,6 +1538,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       ;(err as any).status = 400
       throw err
     }
+    nodes = await this.resolveWorkflowNodeTargets(profile, nodes, activeIds)
+    nodeById = new Map(nodes.map(node => [node.id, node]))
     const activeNodes = nodes.filter(node => activeIds.has(node.id))
     const outputs = new Map<string, string>()
     const nodeStatuses: Record<string, WorkflowRuntimeState> = {}

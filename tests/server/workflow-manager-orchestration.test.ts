@@ -33,7 +33,14 @@ vi.mock('../../packages/server/src/services/agent-runner/coding-agent-run-manage
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({ deleteSessionForProfile: vi.fn() }))
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({ listProfileNamesFromDisk: vi.fn(() => []) }))
 vi.mock('../../packages/server/src/services/logger', () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }))
-vi.mock('../../packages/server/src/controllers/hermes/models', () => ({ getAvailableModelReferencesForProfile: vi.fn(async () => []) }))
+vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
+  getAvailableModelReferencesForProfile: vi.fn(async () => [
+    { provider: 'custom:test', model: 'gpt-test', apiMode: 'chat_completions' },
+  ]),
+  getEffectiveModelReferenceForProfile: vi.fn(async () => (
+    { provider: 'custom:test', model: 'gpt-test', apiMode: 'chat_completions' }
+  )),
+}))
 
 function node(id: string, input = id, joinMode?: 'all' | 'any') {
   return { id, type: 'agent', data: { title: id, agent: 'hermes', input, orchestration: joinMode ? { joinMode } : undefined } }
@@ -417,6 +424,23 @@ describe('workflow manager orchestration', () => {
     expect(result.nodeSessions.map(item => item.node_id)).toEqual(['start', 'next'])
     expect(result.nodeSessions.every(item => item.status === 'completed')).toBe(true)
     expect(state.runAndWait).toHaveBeenCalledTimes(2)
+  })
+
+  it('dispatches legacy rerun snapshots with the resolved profile default target', async () => {
+    state.runAndWait.mockResolvedValue({ ok: true, output: 'ok' })
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { createWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const nodes = [node('start')]
+    const workflow = createWorkflow({ name: 'inherited rerun target', nodes, edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed', snapshot_nodes: nodes, snapshot_edges: [] })
+
+    const result = await new WorkflowManager().rerunFromNode(workflow.id, run.id, 'start')
+
+    expect(result.run.status).toBe('completed')
+    expect(state.runAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'custom:test', model: 'gpt-test', apiMode: 'chat_completions',
+    }), expect.anything())
   })
 
   it('rejects rerun-from-node for orchestration v1 snapshots without mutating the run', async () => {
