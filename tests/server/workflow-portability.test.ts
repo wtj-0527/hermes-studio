@@ -64,9 +64,7 @@ describe('workflow JSON portability', () => {
     expect((first.workflow.nodes[0] as any).data).not.toHaveProperty('apiKey')
     expect((first.workflow.nodes[0] as any).data).not.toHaveProperty('session_id')
     expect((first.workflow.nodes[0] as any).data).not.toHaveProperty('arbitrary')
-    expect((first.workflow.edges[0] as any).data).toEqual({
-      orchestration: { route: 'success' }, trace: { owner: 'qa' }, weight: 2,
-    })
+    expect((first.workflow.edges[0] as any).data).toEqual({ orchestration: { route: 'success' } })
     const text = JSON.stringify(first)
     for (const forbidden of ['workflow-secret-id', 'must-not-export', 'created_at', 'updated_at', 'runs']) {
       expect(text).not.toContain(forbidden)
@@ -103,7 +101,7 @@ describe('workflow JSON portability', () => {
     let nested: any = 'leaf'
     for (let index = 0; index < 25; index += 1) nested = { child: nested }
     expect(() => parseWorkflowImportDocument({ ...base, workflow: { ...base.workflow, nodes: base.workflow.nodes.map((node: any, index: number) => index ? node : ({ ...node, data: { ...node.data, orchestration: nested } })) } })).toThrow(/depth/i)
-    const polluted = JSON.parse(JSON.stringify(base).replace('"trace":{"owner":"qa"}', '"trace":{"__proto__":{"polluted":true}}'))
+    const polluted = JSON.parse(JSON.stringify(base).replace('"orchestration":{"route":"success"}', '"orchestration":{"route":"success","__proto__":{"polluted":true}}'))
     expect(() => parseWorkflowImportDocument(polluted)).toThrow(/unsafe key/i)
     expect(({} as any).polluted).toBeUndefined()
   })
@@ -127,6 +125,7 @@ describe('workflow JSON portability', () => {
       profiles: ['default'],
       agents: ['hermes'],
       models: [{ provider: 'custom:test', model: 'other-model', apiMode: 'codex_responses' }],
+      reasoningCapabilities: [],
       skills: [],
     })
 
@@ -136,6 +135,10 @@ describe('workflow JSON portability', () => {
       agents: ['codex'],
       providers: [],
       models: [{ provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses' }],
+      reasoningCapabilities: [
+        { provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoningEffort: 'high' },
+        { provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoningEffort: 'max' },
+      ],
       skills: [{ agent: 'hermes', name: 'plan' }],
     })
     expect(preview.warnings).toEqual(expect.arrayContaining([

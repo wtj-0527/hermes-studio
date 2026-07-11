@@ -894,7 +894,6 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     const instances = new Map<string, WorkflowV2Instance>()
     const executionInstanceById = new Map<string, WorkflowV2Instance>()
     const propagated = new Set<string>()
-    const consumedEvaluationIds = new Set<string>()
     const handledFailureExecutionIds = new Set<string>()
     const feedbackInputByInstance = new Map<string, { edge: WorkflowEdgeSnapshot; source: WorkflowV2Instance }>()
     const heldEvaluations: WorkflowV2HeldEvaluation[] = []
@@ -1156,7 +1155,6 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
       persistProjection(instance)
       for (const evaluation of instance.incoming.values()) {
         if (evaluation.status !== 'taken') continue
-        consumedEvaluationIds.add(evaluation.id)
         updateWorkflowEdgeEvaluation(evaluation.id, { consumed_by_execution_id: reservation.execution.execution_id })
         if (evaluation.source_execution_id) {
           const source = executionInstanceById.get(evaluation.source_execution_id)

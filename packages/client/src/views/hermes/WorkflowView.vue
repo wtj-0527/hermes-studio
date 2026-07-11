@@ -58,7 +58,7 @@ import type {
   WorkflowNodeStatus,
   WorkflowSelectOption,
 } from '@/components/hermes/workflow/types'
-import { groupWorkflowExecutionHistory, latestWorkflowNodeExecution } from '@/components/hermes/workflow/history'
+import { formatWorkflowEdgeEvaluationEvidence, groupWorkflowExecutionHistory, latestWorkflowEdgeEvaluation, latestWorkflowNodeExecution } from '@/components/hermes/workflow/history'
 import { MAX_WORKFLOW_LOOP_ITERATIONS, buildWorkflowEdgeOrchestration, edgeEvidenceVisual, edgeOrchestrationLabel, normalizeWorkflowEdgeOrchestration, legacyWorkflowEdgeId, normalizeWorkflowJoinMode, withWorkflowEdgeOrchestration, type WorkflowConditionOperator, type WorkflowEdgeOrchestration, type WorkflowRoute } from '@/components/hermes/workflow/orchestration'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 import { normalizeReasoningEffort } from '../../../../shared/reasoning-effort'
@@ -923,6 +923,16 @@ async function applyWorkflowRunSnapshot(run: WorkflowRunRecord) {
     }),
   }))
   edges.value = run.snapshot_edges.map(normalizeStoredEdge).filter((edge): edge is WorkflowEdge => Boolean(edge)).map(edge => {
+    if (run.orchestration_version === 2) {
+      const evidence = latestWorkflowEdgeEvaluation(run.edge_evaluations || [], edge.id)
+      const visual = edgeEvidenceVisual(evidence?.status)
+      return {
+        ...edge,
+        animated: evidence?.delivery_status === 'delivered' && visual.animated,
+        class: visual.className,
+        label: evidence ? `${edge.label} · ${formatWorkflowEdgeEvaluationEvidence(evidence)}` : edge.label,
+      }
+    }
     const evidence = run.edge_results?.find(result => result.edge_id === edge.id)
     const visual = edgeEvidenceVisual(evidence?.status)
     return { ...edge, animated: visual.animated, class: visual.className, label: evidence ? `${edge.label} · ${evidence.status}` : edge.label }

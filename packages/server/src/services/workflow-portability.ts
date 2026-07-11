@@ -1,10 +1,11 @@
 import type { WorkflowRecord } from '../db/hermes/workflow-store'
 import { compileWorkflowGraph, normalizeWorkflowEdgeOrchestration, normalizeWorkflowJoinMode } from './workflow-orchestration'
-import { normalizeReasoningEffort } from '../../../shared/reasoning-effort'
+import { normalizeReasoningEffort, type ReasoningEffort } from '../../../shared/reasoning-effort'
 import { listProfileNamesFromDisk } from './hermes/hermes-profile'
 import { getCodingAgentsStatus } from './coding-agents'
 import { getAvailableModelReferencesForProfile } from '../controllers/hermes/models'
 import { resolveWorkflowSkillContent } from './workflow-skill-resolver'
+import { validateReasoningEffortForProfile } from './reasoning-capability'
 
 export const WORKFLOW_DOCUMENT_SCHEMA = 'hermes-studio.workflow' as const
 export const WORKFLOW_DOCUMENT_VERSION = 1 as const
@@ -14,7 +15,6 @@ export const MAX_WORKFLOW_DOCUMENT_NODES = 500
 export const MAX_WORKFLOW_DOCUMENT_EDGES = 2_000
 
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
-const SENSITIVE_KEY = /^(?:api[_-]?key|authorization|cookie|credential|password|passwd|secret|session[_-]?id|run[_-]?id|token)$/i
 const ENVELOPE_KEYS = new Set(['schema', 'version', 'workflow', 'dependencies'])
 const WORKFLOW_KEYS = new Set(['name', 'profileHint', 'workspaceHint', 'nodes', 'edges', 'viewport'])
 const NODE_KEYS = new Set(['id', 'type', 'position', 'dragHandle', 'style', 'data'])
@@ -28,6 +28,7 @@ const AGENTS = new Set(['hermes', 'codex', 'claude-code'])
 
 type PortableModelDependency = { provider: string; model: string; apiMode: string }
 type PortableSkillDependency = { agent: string; name: string }
+export type PortableReasoningDependency = PortableModelDependency & { reasoningEffort: ReasoningEffort }
 
 export interface WorkflowDocumentDependencies {
   agents: string[]
@@ -65,6 +66,7 @@ export interface WorkflowImportEnvironment {
   profiles: string[]
   agents: string[]
   models: PortableModelDependency[]
+  reasoningCapabilities: PortableReasoningDependency[]
   skills: PortableSkillDependency[]
 }
 
@@ -75,6 +77,7 @@ export interface WorkflowImportPreview {
     agents: string[]
     providers: string[]
     models: PortableModelDependency[]
+    reasoningCapabilities: PortableReasoningDependency[]
     skills: PortableSkillDependency[]
   }
   warnings: string[]
@@ -214,27 +217,6 @@ function portableNode(raw: unknown, mode: 'export' | 'import'): Record<string, u
   }
 }
 
-function cloneSafeMetadata(value: unknown, mode: 'export' | 'import', depth = 0): unknown {
-  if (depth > MAX_WORKFLOW_DOCUMENT_DEPTH) throw new Error(`workflow document exceeds maximum depth ${MAX_WORKFLOW_DOCUMENT_DEPTH}`)
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('workflow metadata numbers must be finite')
-    return value
-  }
-  if (Array.isArray(value)) return value.map(item => cloneSafeMetadata(item, mode, depth + 1))
-  if (typeof value !== 'object') throw new Error('workflow metadata must be JSON compatible')
-  const result: Record<string, unknown> = Object.create(null)
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (UNSAFE_KEYS.has(key)) throw new Error(`workflow document contains unsafe key: ${key}`)
-    if (SENSITIVE_KEY.test(key)) {
-      if (mode === 'import') throw new Error(`workflow metadata contains sensitive field: ${key}`)
-      continue
-    }
-    result[key] = cloneSafeMetadata(item, mode, depth + 1)
-  }
-  return result
-}
-
 function portableEdge(raw: unknown, mode: 'export' | 'import'): Record<string, unknown> {
   const record = asRecord(raw, 'workflow edge')
   assertKnownKeys(record, EDGE_KEYS, 'workflow edge')
@@ -254,11 +236,10 @@ function portableEdge(raw: unknown, mode: 'export' | 'import'): Record<string, u
   }
   if (record.data !== undefined) {
     const data = asRecord(record.data, 'workflow edge data')
-    const cloned = cloneSafeMetadata(data, mode) as Record<string, unknown>
-    if (Object.hasOwn(cloned, 'orchestration')) {
-      cloned.orchestration = normalizeWorkflowEdgeOrchestration(cloned.orchestration)
+    if (mode === 'import') assertKnownKeys(data, new Set(['orchestration']), 'workflow edge data')
+    if (Object.hasOwn(data, 'orchestration')) {
+      edge.data = { orchestration: normalizeWorkflowEdgeOrchestration(data.orchestration) }
     }
-    edge.data = cloned
   }
   return edge
 }
@@ -405,6 +386,28 @@ export function parseWorkflowImportDocument(value: unknown): ParsedWorkflowImpor
   return canonical
 }
 
+function reasoningDependenciesForNodes(nodes: unknown[]): PortableReasoningDependency[] {
+  const required = new Map<string, PortableReasoningDependency>()
+  for (const raw of nodes) {
+    const data = (raw as Record<string, any>).data as Record<string, any>
+    const reasoningEffort = normalizeReasoningEffort(data.reasoningEffort)
+    if (!reasoningEffort) continue
+    const dependency = {
+      provider: data.provider,
+      model: data.model,
+      apiMode: data.apiMode,
+      reasoningEffort,
+    }
+    required.set(`${dependency.provider}\0${dependency.model}\0${dependency.apiMode}\0${dependency.reasoningEffort}`, dependency)
+  }
+  return [...required.values()].sort((a, b) => (
+    a.provider.localeCompare(b.provider)
+    || a.model.localeCompare(b.model)
+    || a.apiMode.localeCompare(b.apiMode)
+    || a.reasoningEffort.localeCompare(b.reasoningEffort)
+  ))
+}
+
 function missingPairs<T extends Record<string, string>>(required: T[], available: T[], keys: Array<keyof T>): T[] {
   const identities = new Set(available.map(item => keys.map(key => item[key]).join('\0')))
   return required.filter(item => !identities.has(keys.map(key => item[key]).join('\0')))
@@ -423,6 +426,11 @@ export function inspectWorkflowImportDependencies(
     agents: parsed.dependencies.agents.filter(agent => !agents.has(agent)),
     providers: parsed.dependencies.providers.filter(provider => !providers.has(provider)),
     models: missingPairs(parsed.dependencies.models, environment.models, ['provider', 'model', 'apiMode']),
+    reasoningCapabilities: missingPairs(
+      reasoningDependenciesForNodes(parsed.nodes),
+      environment.reasoningCapabilities || [],
+      ['provider', 'model', 'apiMode', 'reasoningEffort'],
+    ),
     skills: missingPairs(parsed.dependencies.skills, environment.skills, ['agent', 'name']),
   }
   const warnings: string[] = []
@@ -462,6 +470,15 @@ export async function collectWorkflowImportEnvironment(
   for (const tool of codingAgentStatus.tools) {
     if (tool.installed) installedAgents.add(tool.id)
   }
+  const reasoningCapabilities: PortableReasoningDependency[] = []
+  for (const dependency of reasoningDependenciesForNodes(parsed.nodes)) {
+    try {
+      await validateReasoningEffortForProfile({ profile, ...dependency })
+      reasoningCapabilities.push(dependency)
+    } catch {
+      // Missing/unsupported authoritative capability remains an unresolved import dependency.
+    }
+  }
   const skills: PortableSkillDependency[] = []
   for (const dependency of parsed.dependencies.skills) {
     const resolved = await resolveWorkflowSkillContent({
@@ -476,6 +493,7 @@ export async function collectWorkflowImportEnvironment(
     profiles: listProfileNamesFromDisk(),
     agents: [...installedAgents],
     models,
+    reasoningCapabilities,
     skills,
   }
 }

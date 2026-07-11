@@ -114,7 +114,7 @@ Run detail returns them as:
 node_executions, edge_evaluations, loop_iterations
 ```
 
-The client groups node executions by canonical ordered iteration path, displays skipped evidence and terminal codes, and opens the exact repeated session selected by the operator. Earlier iterations are never overwritten.
+The client groups node executions by canonical ordered iteration path, displays skipped evidence and terminal codes, and opens the exact repeated session selected by the operator. On a v2 historical canvas, each edge uses its latest `edge_evaluations` record and shows status, delivery/suppression, consumption, and iteration path. Earlier iterations are never overwritten.
 
 ## Portable JSON definition
 
@@ -129,14 +129,14 @@ Export uses a definition-only envelope:
 }
 ```
 
-The allowlist includes topology, Agent configuration, prompts, skills by name, model/reasoning selection, route/join/condition/loop policy, viewport, and dependency hints. Credentials, cookies, tokens, sessions, messages, run/evaluation history, and local attachment paths are excluded or rejected.
+The allowlist includes topology, Agent configuration, prompts, skills by name, model/reasoning selection, route/join/condition/loop policy, viewport, and dependency hints. `edge.data` permits only canonical `orchestration`; all other imported edge metadata is rejected and all other stored edge metadata is omitted during export. Credentials, cookies, tokens, sessions, messages, run/evaluation history, and local attachment paths are excluded or rejected.
 
 Import is fail-closed:
 
 1. Parse strict schema/version and size limits.
 2. Compile the graph and inspect dependencies in the authorized target profile.
 3. Return a preview plus a user/profile/document-bound, 10-minute, single-use token.
-4. Recheck the document digest and environment at confirmation.
+4. Recheck the document digest, exact provider/model/API mode, and authoritative reasoning capability in the target profile at confirmation.
 5. With explicit confirmation, create a new **inactive** Workflow.
 
 Import never remaps missing dependencies, overwrites an existing Workflow, trusts `profileHint` as authorization, or starts a run automatically.

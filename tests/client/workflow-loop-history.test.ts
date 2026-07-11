@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatWorkflowEdgeEvaluationEvidence,
   formatWorkflowIterationPath,
   groupWorkflowExecutionHistory,
+  latestWorkflowEdgeEvaluation,
   latestWorkflowNodeExecution,
 } from '../../packages/client/src/components/hermes/workflow/history'
 import type { WorkflowRunNodeExecutionRecord } from '../../packages/client/src/api/hermes/workflows'
@@ -54,4 +56,14 @@ describe('workflow loop history grouping', () => {
     expect(latestWorkflowNodeExecution(rows, 'review')).toBe(rows[2])
     expect(latestWorkflowNodeExecution(rows, 'missing')).toBeNull()
   })
+  it('selects the latest v2 edge evaluation and formats iteration, delivery, and consumption evidence', () => {
+    const rows: any[] = [
+      { id: 'first', edge_id: 'edge-1', status: 'taken', delivery_status: 'suppressed', consumed_by_execution_id: null, iteration_path: [{ loopId: 'loop:review', iteration: 1 }], sequence: 3 },
+      { id: 'second', edge_id: 'edge-1', status: 'not_taken', delivery_status: 'delivered', consumed_by_execution_id: 'execution-2', iteration_path: [{ loopId: 'loop:review', iteration: 2 }], sequence: 8 },
+    ]
+    const evidence = latestWorkflowEdgeEvaluation(rows, 'edge-1')
+    expect(evidence?.id).toBe('second')
+    expect(formatWorkflowEdgeEvaluationEvidence(evidence!)).toBe('not_taken · delivered · consumed · loop:review #2')
+  })
+
 })

@@ -22,4 +22,11 @@ describe('Workflow v2 loop UI', () => {
     expect(source).toContain('.workflow-run-v2-history {')
     expect(source).toContain('.workflow-run-v2-execution {')
   })
+  it('renders v2 edge evaluations on the historical canvas instead of legacy edge results', () => {
+    expect(source).toContain("run.orchestration_version === 2")
+    expect(source).toContain('latestWorkflowEdgeEvaluation(run.edge_evaluations || [], edge.id)')
+    expect(source).toContain('formatWorkflowEdgeEvaluationEvidence(evidence)')
+    expect(source).toContain('evidence?.delivery_status')
+  })
+
 })

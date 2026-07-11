@@ -40,6 +40,7 @@ const missingRows = computed(() => {
     ...missing.agents.map(value => ({ type: t('workflow.portability.agents'), value })),
     ...missing.providers.map(value => ({ type: t('workflow.portability.providers'), value })),
     ...missing.models.map(value => ({ type: t('workflow.portability.models'), value: `${value.provider} / ${value.model} / ${value.apiMode}` })),
+    ...(missing.reasoningCapabilities || []).map(value => ({ type: t('workflow.portability.models'), value: `${value.provider} / ${value.model} / ${value.apiMode} / reasoning=${value.reasoningEffort}` })),
     ...missing.skills.map(value => ({ type: t('workflow.portability.skills'), value: `${value.agent} / ${value.name}` })),
   ]
 })

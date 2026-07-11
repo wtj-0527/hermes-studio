@@ -1,4 +1,4 @@
-import type { WorkflowRunNodeExecutionRecord } from '@/api/hermes/workflows'
+import type { WorkflowRunEdgeEvaluationRecord, WorkflowRunNodeExecutionRecord } from '@/api/hermes/workflows'
 
 export interface WorkflowExecutionHistoryGroup {
   key: string
@@ -29,4 +29,25 @@ export function latestWorkflowNodeExecution(rows: WorkflowRunNodeExecutionRecord
     if (execution.node_id === nodeId && (!latest || execution.sequence > latest.sequence)) latest = execution
   }
   return latest
+}
+
+
+export function latestWorkflowEdgeEvaluation(
+  rows: WorkflowRunEdgeEvaluationRecord[],
+  edgeId: string,
+): WorkflowRunEdgeEvaluationRecord | null {
+  let latest: WorkflowRunEdgeEvaluationRecord | null = null
+  for (const evaluation of rows) {
+    if (evaluation.edge_id === edgeId && (!latest || evaluation.sequence > latest.sequence)) latest = evaluation
+  }
+  return latest
+}
+
+export function formatWorkflowEdgeEvaluationEvidence(evaluation: WorkflowRunEdgeEvaluationRecord): string {
+  return [
+    evaluation.status,
+    evaluation.delivery_status,
+    evaluation.consumed_by_execution_id ? 'consumed' : 'unconsumed',
+    formatWorkflowIterationPath(evaluation.iteration_path),
+  ].join(' · ')
 }

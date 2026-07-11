@@ -48,7 +48,7 @@ describe('workflow portability security boundaries', () => {
     const parsed = parseWorkflowImportDocument(exported)
     const preview = inspectWorkflowImportDependencies(parsed, {
       targetProfile: 'default', profiles: ['default'], agents: ['hermes'], skills: [],
-      models: [{ provider: 'custom:test', model: 'm', apiMode: 'chat_completions' }],
+      models: [{ provider: 'custom:test', model: 'm', apiMode: 'chat_completions' }], reasoningCapabilities: [],
     })
     expect(preview.canImport).toBe(false)
     expect(preview.missing.models).toEqual([
@@ -56,11 +56,51 @@ describe('workflow portability security boundaries', () => {
     ])
   })
 
+  it('exports only canonical edge orchestration and rejects every other imported edge data field', () => {
+    const source = record() as any
+    source.edges = [{
+      id: 'edge-1', source: 'agent-1', target: 'agent-1',
+      data: {
+        orchestration: { route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 2 } },
+        clientSecret: 'must-not-export', accessToken: 'must-not-export',
+        oauth: { refreshToken: 'must-not-export' }, headers: { 'X-API-Key': 'must-not-export' },
+        auth: { bearer: 'must-not-export' }, trace: { owner: 'qa' }, weight: 2,
+      },
+    }]
+    const exported = exportWorkflowDocument(source) as any
+    expect(exported.workflow.edges[0].data).toEqual({
+      orchestration: { route: 'success', condition: { path: 'json.retry', operator: 'truthy' }, loop: { maxIterations: 2 } },
+    })
+    const tampered = structuredClone(exported)
+    tampered.workflow.edges[0].data.clientSecret = 'injected'
+    expect(() => parseWorkflowImportDocument(tampered)).toThrow(/edge data.*unknown field.*clientSecret/i)
+  })
+
+  it('requires each explicit reasoning effort to be supported by the exact target model tuple', () => {
+    const parsed = parseWorkflowImportDocument(exportWorkflowDocument(record(node({ reasoningEffort: 'max' })) as any))
+    const unsupported = inspectWorkflowImportDependencies(parsed, {
+      targetProfile: 'default', profiles: ['default'], agents: ['hermes'], skills: [],
+      models: [{ provider: 'custom:test', model: 'm', apiMode: 'responses' }],
+      reasoningCapabilities: [],
+    })
+    expect(unsupported.canImport).toBe(false)
+    expect(unsupported.missing.reasoningCapabilities).toEqual([
+      { provider: 'custom:test', model: 'm', apiMode: 'responses', reasoningEffort: 'max' },
+    ])
+
+    const supported = inspectWorkflowImportDependencies(parsed, {
+      targetProfile: 'default', profiles: ['default'], agents: ['hermes'], skills: [],
+      models: [{ provider: 'custom:test', model: 'm', apiMode: 'responses' }],
+      reasoningCapabilities: [{ provider: 'custom:test', model: 'm', apiMode: 'responses', reasoningEffort: 'max' }],
+    })
+    expect(supported.canImport).toBe(true)
+  })
+
   it('warns when a source profile hint differs from the explicit target without remapping it', () => {
     const parsed = parseWorkflowImportDocument(exportWorkflowDocument(record() as any))
     const preview = inspectWorkflowImportDependencies(parsed, {
       targetProfile: 'work', profiles: ['work'], agents: ['hermes'], skills: [],
-      models: [{ provider: 'custom:test', model: 'm', apiMode: 'responses' }],
+      models: [{ provider: 'custom:test', model: 'm', apiMode: 'responses' }], reasoningCapabilities: [],
     })
     expect(preview.resolvedWorkflow.profile).toBe('work')
     expect(preview.warnings.join('\n')).toMatch(/profile.*default.*work/i)

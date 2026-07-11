@@ -55,6 +55,7 @@ export interface WorkflowImportMissingDependencies {
   agents: string[]
   providers: string[]
   models: Array<{ provider: string; model: string; apiMode: string }>
+  reasoningCapabilities: Array<{ provider: string; model: string; apiMode: string; reasoningEffort: string }>
   skills: Array<{ agent: string; name: string }>
 }
 
