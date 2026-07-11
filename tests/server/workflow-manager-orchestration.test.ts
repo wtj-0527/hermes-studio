@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   appHome: '',
   runAndWait: vi.fn(),
   abortSession: vi.fn(),
+  chatRunAvailable: true,
 }))
 
 vi.mock('../../packages/server/src/db/index', () => ({
@@ -18,7 +19,9 @@ vi.mock('../../packages/server/src/db/index', () => ({
 }))
 vi.mock('../../packages/server/src/config', () => ({ config: { appHome: state.appHome } }))
 vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
-  getChatRunServer: () => ({ runAndWait: state.runAndWait, abortSession: state.abortSession }),
+  getChatRunServer: () => state.chatRunAvailable
+    ? { runAndWait: state.runAndWait, abortSession: state.abortSession }
+    : undefined,
 }))
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({ getExactSessionDetailFromDbWithProfile: vi.fn() }))
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
@@ -45,6 +48,7 @@ describe('workflow manager orchestration', () => {
     vi.resetModules()
     state.runAndWait.mockReset()
     state.abortSession.mockReset()
+    state.chatRunAvailable = true
     root = mkdtempSync(join(tmpdir(), 'workflow-manager-orchestration-'))
     state.appHome = join(root, 'home')
     state.db = new DatabaseSync(join(root, 'workflow.db'))
@@ -343,6 +347,59 @@ describe('workflow manager orchestration', () => {
     expect(result.run.node_states.unsafe.status).toBe('skipped')
   })
 
+
+  it('rejects rerun preflight when the chat-run backend is unavailable', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { createWorkflowRun, getWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const nodes = [node('start')]
+    const workflow = createWorkflow({ name: 'missing chat backend', nodes, edges: [] })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed', snapshot_nodes: nodes, snapshot_edges: [] })
+    state.chatRunAvailable = false
+
+    await expect(new WorkflowManager().preflightRerunFromNode(workflow.id, run.id, 'start')).rejects.toMatchObject({
+      message: 'chat-run server is not available',
+      status: 503,
+    })
+    expect(getWorkflowRun(run.id)?.status).toBe('completed')
+    expect(state.runAndWait).not.toHaveBeenCalled()
+  })
+
+  it('rejects rerun preflight when the preserved start node has no completed evidence', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { createWorkflowRun, getWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const nodes = [node('start'), node('next')]
+    const edges = [edge('start-next', 'start', 'next')]
+    const workflow = createWorkflow({ name: 'missing preserved evidence', nodes, edges })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed', snapshot_nodes: nodes, snapshot_edges: edges })
+
+    await expect(new WorkflowManager().preflightRerunFromNode(workflow.id, run.id, 'start', {
+      preserveStartNode: true,
+    })).rejects.toMatchObject({
+      message: 'workflow node has no completed output to preserve',
+      status: 409,
+    })
+    expect(getWorkflowRun(run.id)?.status).toBe('completed')
+    expect(state.runAndWait).not.toHaveBeenCalled()
+  })
+
+  it('rejects rerun preflight when an upstream dependency has no completed evidence', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { createWorkflowRun, getWorkflowRun } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
+    const nodes = [node('upstream'), node('target')]
+    const edges = [edge('upstream-target', 'upstream', 'target')]
+    const workflow = createWorkflow({ name: 'missing upstream evidence', nodes, edges })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed', snapshot_nodes: nodes, snapshot_edges: edges })
+
+    await expect(new WorkflowManager().preflightRerunFromNode(workflow.id, run.id, 'target')).rejects.toMatchObject({
+      message: 'Upstream node upstream has no completed output',
+      status: 409,
+    })
+    expect(getWorkflowRun(run.id)?.status).toBe('completed')
+    expect(state.runAndWait).not.toHaveBeenCalled()
+  })
 
   it('reruns snapshots with explicit legacy success/all defaults', async () => {
     state.runAndWait.mockResolvedValue({ ok: true, output: 'rerun output' })

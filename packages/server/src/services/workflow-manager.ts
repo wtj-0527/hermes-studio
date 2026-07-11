@@ -1395,6 +1395,10 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     input: WorkflowRerunFromNodeInput = {},
   ): Promise<void> {
     const { workflow, run } = this.validateRerunFromNode(workflowId, runId)
+    const chatRun = getChatRunServer()
+    if (!chatRun?.runAndWait) {
+      const err = new Error('chat-run server is not available'); (err as any).status = 503; throw err
+    }
     const profile = input.profile?.trim() || run.profile || workflow.profile || 'default'
     const nodes = run.snapshot_nodes.map(normalizeNode).filter(Boolean) as WorkflowNodeSnapshot[]
     const nodeById = new Map(nodes.map(node => [node.id, node]))
@@ -1402,14 +1406,36 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     if (!targetNodeId || !nodeById.has(targetNodeId)) {
       const err = new Error('workflow node not found in run snapshot'); (err as any).status = 404; throw err
     }
+    const incoming = new Map(nodes.map(node => [node.id, [] as WorkflowEdgeSnapshot[]]))
     const outgoing = new Map(nodes.map(node => [node.id, [] as WorkflowEdgeSnapshot[]]))
     for (const edge of run.snapshot_edges.map(normalizeEdge).filter(Boolean) as WorkflowEdgeSnapshot[]) {
-      if (nodeById.has(edge.source) && nodeById.has(edge.target)) outgoing.get(edge.source)!.push(edge)
+      if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) continue
+      incoming.get(edge.target)!.push(edge)
+      outgoing.get(edge.source)!.push(edge)
+    }
+    const existingSessionByNode = new Map(listWorkflowRunNodeSessions(run.id).map(session => [session.node_id, session]))
+    if (input.preserveStartNode) {
+      const startSession = existingSessionByNode.get(targetNodeId)
+      if (!startSession || startSession.status !== 'completed') {
+        const err = new Error('workflow node has no completed output to preserve'); (err as any).status = 409; throw err
+      }
     }
     const starts = input.preserveStartNode ? (outgoing.get(targetNodeId) || []).map(edge => edge.target) : [targetNodeId]
     const activeIds = reachableFrom(starts, outgoing)
     if (activeIds.size === 0) {
       const err = new Error('workflow node has no downstream nodes to rerun'); (err as any).status = 400; throw err
+    }
+    for (const node of nodes.filter(node => activeIds.has(node.id))) {
+      for (const edge of incoming.get(node.id) || []) {
+        if (activeIds.has(edge.source)) continue
+        const upstreamSession = existingSessionByNode.get(edge.source)
+        if (!upstreamSession || upstreamSession.status !== 'completed') {
+          const upstream = nodeById.get(edge.source)
+          const err = new Error(`Upstream node ${upstream?.data.title || edge.source} has no completed output`)
+          ;(err as any).status = 409
+          throw err
+        }
+      }
     }
     await this.preflightWorkflowNodes(profile, nodes.filter(node => activeIds.has(node.id)))
   }

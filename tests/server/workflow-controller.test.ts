@@ -290,6 +290,19 @@ describe('workflow controller', () => {
     expect(managerMock.rerunFromNode).not.toHaveBeenCalled()
   })
 
+  it('rejects rerun evidence preflight synchronously before acceptance or mutation', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.preflightRerunFromNode.mockRejectedValue(Object.assign(new Error('Upstream node upstream has no completed output'), { status: 409 }))
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' }, request: { body: { node_id: 'node-2' } } })
+
+    await mod.rerunFromNode(c)
+
+    expect(c.status).toBe(409)
+    expect(c.body).toEqual({ error: 'Upstream node upstream has no completed output' })
+    expect(managerMock.rerunFromNode).not.toHaveBeenCalled()
+  })
+
   it('returns orchestration v1 rerun rejection synchronously instead of accepting a no-op', async () => {
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
     managerMock.validateRerunFromNode.mockImplementation(() => {
