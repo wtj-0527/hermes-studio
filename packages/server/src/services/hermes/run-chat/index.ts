@@ -110,6 +110,9 @@ export class ChatRunSocket {
   private sessionMap = new Map<string, SessionState>()
   private bridgeResumePolls = new Set<string>()
   private readonly runWaiters = new Map<string, Set<(event: string, payload: any) => void>>()
+  private asyncCompletionTimer: ReturnType<typeof setInterval> | null = null
+  private readonly asyncCompletionInFlight = new Set<string>()
+  private readonly asyncCompletionProfilePolls = new Set<string>()
 
   constructor(io: Server) {
     this.nsp = io.of('/chat-run')
@@ -118,7 +121,49 @@ export class ChatRunSocket {
   init() {
     this.nsp.use(this.authMiddleware.bind(this))
     this.nsp.on('connection', this.onConnection.bind(this))
+    if (!this.asyncCompletionTimer) {
+      this.asyncCompletionTimer = setInterval(() => { void this.pollAsyncCompletions() }, 500)
+    }
     logger.info('[chat-run-socket] Socket.IO ready at /chat-run')
+  }
+
+  private async pollAsyncCompletions(): Promise<void> {
+    const profiles = new Set<string>()
+    for (const [sessionId, state] of this.sessionMap.entries()) {
+      const profile = state.profile || getSession(sessionId)?.profile
+      if (profile) profiles.add(profile)
+    }
+    for (const profile of profiles) {
+      if (this.asyncCompletionProfilePolls.has(profile)) continue
+      this.asyncCompletionProfilePolls.add(profile)
+      try {
+        const response = await this.bridge.listAsyncCompletions(profile)
+        for (const completion of response.completions) {
+          const state = this.sessionMap.get(completion.session_key)
+          if (!state || state.isWorking || this.asyncCompletionInFlight.has(completion.delegation_id)) continue
+          this.asyncCompletionInFlight.add(completion.delegation_id)
+          void this.runAndWait({
+            input: completion.text,
+            display_input: null,
+            session_id: completion.session_key,
+            profile: completion.profile,
+            source: 'cli',
+          }, { profile: completion.profile }).then(
+            async result => {
+              if (!result.run_id) return
+              await this.bridge.ackAsyncCompletion(completion.delegation_id, completion.profile)
+            },
+            () => undefined,
+          ).catch(err => logger.warn(err, '[chat-run-socket] failed to ack async delegation completion')).finally(() => {
+            this.asyncCompletionInFlight.delete(completion.delegation_id)
+          })
+        }
+      } catch (err) {
+        logger.debug(err, '[chat-run-socket] failed to poll async delegation completions for profile %s', profile)
+      } finally {
+        this.asyncCompletionProfilePolls.delete(profile)
+      }
+    }
   }
 
   // --- Auth middleware ---
@@ -1003,6 +1048,12 @@ export class ChatRunSocket {
 
   /** Close all active upstream response streams */
   close() {
+    if (this.asyncCompletionTimer) {
+      clearInterval(this.asyncCompletionTimer)
+      this.asyncCompletionTimer = null
+    }
+    this.asyncCompletionInFlight.clear()
+    this.asyncCompletionProfilePolls.clear()
     for (const [sessionId, state] of this.sessionMap.entries()) {
       if (state.abortController) {
         try {

@@ -256,6 +256,15 @@ class BridgeBroker:
         if action == "status_if_loaded":
             return self._status_if_loaded(req)
 
+        if action in {"async_completions_list", "async_completion_ack"}:
+            profile = self._normalize_profile(req.get("profile"))
+            worker_key = self._normalize_worker_key(profile, req.get("worker_key"))
+            with self._lock:
+                worker = self._workers.get(worker_key)
+            if worker is None or not worker.running:
+                return {"completions": []} if action == "async_completions_list" else {"delegation_id": str(req.get("delegation_id") or ""), "acked": False}
+            return self._forward(profile, req, worker_key)
+
         if action in {"interrupt", "steer", "command", "switch_session_model", "goal_evaluate", "goal_pause", "status", "get_history", "get_session_title", "destroy"}:
             session_id = str(req.get("session_id") or "")
             profile, worker_key = self._route_for_session(session_id, req.get("profile"), req.get("worker_key") if "worker_key" in req else None)

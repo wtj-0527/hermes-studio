@@ -5,8 +5,11 @@ const managerMock = vi.hoisted(() => ({
   deleteRun: vi.fn(),
   rerunFromNode: vi.fn(),
   runNow: vi.fn(),
+  prepareRun: vi.fn(),
+  runPrepared: vi.fn(),
   stopRun: vi.fn(),
 }))
+const getWorkflowRunMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunsMock = vi.hoisted(() => vi.fn())
 const listWorkflowRunNodeSessionsMock = vi.hoisted(() => vi.fn())
 const listUserProfilesMock = vi.hoisted(() => vi.fn())
@@ -20,6 +23,7 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 }))
 
 vi.mock('../../packages/server/src/db/hermes/workflow-run-store', () => ({
+  getWorkflowRun: getWorkflowRunMock,
   listWorkflowRunNodeSessions: listWorkflowRunNodeSessionsMock,
   listWorkflowRuns: listWorkflowRunsMock,
 }))
@@ -42,16 +46,39 @@ describe('workflow controller', () => {
     managerMock.deleteRun.mockReset()
     managerMock.rerunFromNode.mockReset()
     managerMock.runNow.mockReset()
+    managerMock.prepareRun.mockReset()
+    managerMock.prepareRun.mockReturnValue({ workflow: { id: 'workflow-1' }, compiled: {} })
+    managerMock.runPrepared.mockReset()
     managerMock.stopRun.mockReset()
+    getWorkflowRunMock.mockReset()
     listWorkflowRunNodeSessionsMock.mockReset()
     listWorkflowRunsMock.mockReset()
     listUserProfilesMock.mockReset()
     listUserProfilesMock.mockReturnValue([])
   })
 
+  it('gets run detail with node sessions and edge results', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    getWorkflowRunMock.mockReturnValue({
+      id: 'run-1', workflow_id: 'workflow-1', status: 'completed',
+      edge_results: [{ edge_id: 'e1', status: 'taken' }],
+    })
+    listWorkflowRunNodeSessionsMock.mockReturnValue([{ node_id: 'node-1', status: 'completed' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1', runId: 'run-1' } })
+    await mod.getRun(c)
+
+    expect(c.body).toEqual({ run: {
+      id: 'run-1', workflow_id: 'workflow-1', status: 'completed',
+      edge_results: [{ edge_id: 'e1', status: 'taken' }],
+      node_sessions: [{ node_id: 'node-1', status: 'completed' }],
+    } })
+  })
+
   it('lists run records for a workflow', async () => {
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed' }])
+    listWorkflowRunsMock.mockReturnValue([{ id: 'run-1', workflow_id: 'workflow-1', status: 'completed', edge_results: [{ edge_id: 'e1', status: 'taken' }] }])
     listWorkflowRunNodeSessionsMock.mockReturnValue([{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }])
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
@@ -66,6 +93,7 @@ describe('workflow controller', () => {
         id: 'run-1',
         workflow_id: 'workflow-1',
         status: 'completed',
+        edge_results: [{ edge_id: 'e1', status: 'taken' }],
         node_sessions: [{ id: 'node-session-1', node_id: 'node-1', status: 'completed' }],
       }],
     })
@@ -74,7 +102,7 @@ describe('workflow controller', () => {
   it('runs a workflow through the workflow manager', async () => {
     const user = { id: 'user-1', role: 'super_admin' }
     managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
-    managerMock.runNow.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
+    managerMock.runPrepared.mockResolvedValue({ run: { id: 'run-1', status: 'completed' }, nodeSessions: [] })
 
     const mod = await import('../../packages/server/src/controllers/hermes/workflows')
     const c = ctx({
@@ -85,7 +113,8 @@ describe('workflow controller', () => {
 
     await mod.runNow(c)
 
-    expect(managerMock.runNow).toHaveBeenCalledWith('workflow-1', {
+    expect(managerMock.prepareRun).toHaveBeenCalledWith('workflow-1', ['node-1', 'node-2'])
+    expect(managerMock.runPrepared).toHaveBeenCalledWith({ workflow: { id: 'workflow-1' }, compiled: {} }, {
       profile: 'default',
       user,
       startNodeIds: ['node-1', 'node-2'],
@@ -94,6 +123,29 @@ describe('workflow controller', () => {
     })
     expect(c.status).toBe(202)
     expect(c.body).toEqual({ ok: true, status: 'accepted' })
+  })
+
+  it('returns 400 synchronously for unknown explicit start node ids', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.prepareRun.mockImplementation(() => { const error: any = new Error('unknown start node ids: missing'); error.status = 400; throw error })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' }, request: { body: { start_node_ids: ['missing'] } } })
+    await mod.runNow(c)
+    expect(managerMock.prepareRun).toHaveBeenCalledWith('workflow-1', ['missing'])
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'unknown start node ids: missing' })
+    expect(managerMock.runPrepared).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 synchronously for a malformed graph without starting a run', async () => {
+    managerMock.get.mockReturnValue({ id: 'workflow-1', profile: 'default' })
+    managerMock.prepareRun.mockImplementation(() => { const error: any = new Error('workflow graph contains a cycle'); error.status = 400; throw error })
+    const mod = await import('../../packages/server/src/controllers/hermes/workflows')
+    const c = ctx({ params: { id: 'workflow-1' }, request: { body: {} } })
+    await mod.runNow(c)
+    expect(c.status).toBe(400)
+    expect(c.body).toEqual({ error: 'workflow graph contains a cycle' })
+    expect(managerMock.runPrepared).not.toHaveBeenCalled()
   })
 
   it('stops a workflow run through the workflow manager', async () => {
@@ -162,6 +214,6 @@ describe('workflow controller', () => {
     await mod.runNow(c)
 
     expect(c.status).toBe(403)
-    expect(managerMock.runNow).not.toHaveBeenCalled()
+    expect(managerMock.runPrepared).not.toHaveBeenCalled()
   })
 })

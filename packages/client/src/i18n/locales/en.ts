@@ -658,6 +658,10 @@ export default {
     title: 'Workflow',
     profile: 'Profile',
     namePlaceholder: 'Workflow name',
+    orchestration: {
+      invalidCondition: 'Invalid condition. Enter a valid condition path and operator.',
+      edgePolicy: 'Edge policy', editEdge: 'Edit edge policy', condition: 'Condition', path: 'Condition path', value: 'Condition value (JSON or text)', joinMode: 'Join mode', joinAll: 'Wait for all inbound routes', joinAny: 'Run when any inbound route is taken',
+    },
     workspace: {
       title: 'Select Workspace',
       select: 'Select workspace',
@@ -718,6 +722,7 @@ export default {
       running: 'Running',
       completed: 'Completed',
       failed: 'Failed',
+      skipped: 'Skipped',
       canceled: 'Canceled',
     },
     runs: {

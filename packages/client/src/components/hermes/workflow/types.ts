@@ -1,13 +1,14 @@
 import type { SelectOption } from 'naive-ui'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 import type { CodingAgentApiMode } from '@/api/coding-agents'
+import type { WorkflowJoinMode } from './orchestration'
 
 export interface WorkflowSelectOption extends SelectOption {
   label: string
   value: string
 }
 
-export type WorkflowNodeStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
+export type WorkflowNodeStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'skipped' | 'canceled'
 
 export interface WorkflowAgentNodeData {
   title: string
@@ -18,6 +19,7 @@ export interface WorkflowAgentNodeData {
   input: string
   skills: string[]
   images: string[]
+  joinMode: WorkflowJoinMode
   status: WorkflowNodeStatus
   statusError?: string | null
   readonly?: boolean
@@ -29,4 +31,4 @@ export interface WorkflowAgentNodeData {
   onUploadImages: (id: string, files: File[]) => Promise<string[]>
 }
 
-export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'input' | 'skills' | 'images'>
+export type WorkflowAgentNodeEditableData = Pick<WorkflowAgentNodeData, 'title' | 'agent' | 'provider' | 'model' | 'apiMode' | 'input' | 'skills' | 'images' | 'joinMode'>

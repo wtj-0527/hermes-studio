@@ -110,6 +110,59 @@ describe('workflow store', () => {
     })
   })
 
+  it('persists edge evaluations on run detail and list records', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const {
+      createWorkflowRun,
+      createWorkflowRunEdgeResult,
+      getWorkflowRun,
+      listWorkflowRunEdgeResults,
+      listWorkflowRuns,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const workflow = createWorkflow({ name: 'Conditional', profile: 'default' })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'running' })
+
+    const edgeResult = createWorkflowRunEdgeResult({
+      run_id: run.id,
+      workflow_id: workflow.id,
+      edge_id: 'approve',
+      source_node_id: 'plan',
+      target_node_id: 'publish',
+      status: 'taken',
+      reason: 'condition matched',
+      context: { status: 'success', json: { approved: true } },
+    })
+
+    expect(listWorkflowRunEdgeResults(run.id)).toEqual([edgeResult])
+    expect(getWorkflowRun(run.id)?.edge_results).toEqual([edgeResult])
+    expect(listWorkflowRuns(workflow.id)[0].edge_results).toEqual([edgeResult])
+  })
+
+  it('deletes workflow edge results together with their run', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const {
+      createWorkflowRun,
+      createWorkflowRunEdgeResult,
+      deleteWorkflowRun,
+      listWorkflowRunEdgeResults,
+    } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const workflow = createWorkflow({ name: 'Cleanup', profile: 'default' })
+    const run = createWorkflowRun({ workflow_id: workflow.id, status: 'completed' })
+    createWorkflowRunEdgeResult({
+      run_id: run.id,
+      workflow_id: workflow.id,
+      edge_id: 'e1',
+      source_node_id: 'a',
+      target_node_id: 'b',
+      status: 'not_taken',
+      reason: 'condition did not match',
+      context: { status: 'success' },
+    })
+
+    expect(deleteWorkflowRun(run.id)).toBe(true)
+    expect(listWorkflowRunEdgeResults(run.id)).toEqual([])
+  })
+
   it('deletes workflow runs and their node session records', async () => {
     const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
     const {
@@ -135,4 +188,68 @@ describe('workflow store', () => {
     expect(getWorkflowRun(run.id)).toBeNull()
     expect(listWorkflowRunNodeSessions(run.id)).toEqual([])
   })
+  it('persists durable run node states in detail and list records', async () => {
+    const { createWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
+    const { createWorkflowRun, updateWorkflowRunNodeState, getWorkflowRun, listWorkflowRuns } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+    const workflow = createWorkflow({ name: 'States' })
+    const run = createWorkflowRun({ workflow_id: workflow.id })
+    updateWorkflowRunNodeState(run.id, 'skipped-node', { status: 'skipped', reason: 'branch not taken', started_at: 10, finished_at: 10 })
+    expect(getWorkflowRun(run.id)?.node_states).toEqual({ 'skipped-node': { status: 'skipped', reason: 'branch not taken', started_at: 10, finished_at: 10 } })
+    expect(listWorkflowRuns(workflow.id)[0].node_states).toEqual(getWorkflowRun(run.id)?.node_states)
+  })
+
+  it('additively migrates legacy workflow runs without losing data', async () => {
+    const db = state.db!
+    db.exec(`
+      DROP TABLE workflow_runs;
+      CREATE TABLE workflow_runs (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        profile TEXT NOT NULL DEFAULT 'default',
+        workspace TEXT,
+        start_node_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'queued',
+        snapshot_nodes_json TEXT NOT NULL DEFAULT '[]',
+        snapshot_edges_json TEXT NOT NULL DEFAULT '[]',
+        started_at INTEGER,
+        finished_at INTEGER,
+        created_at INTEGER NOT NULL,
+        error TEXT
+      );
+    `)
+    const nodes = [{ id: 'legacy-node', data: { title: 'Legacy' } }]
+    const edges = [{ id: 'legacy-edge', source: 'legacy-node', target: 'next' }]
+    db.prepare(`INSERT INTO workflow_runs (
+      id, workflow_id, profile, workspace, start_node_ids_json, status,
+      snapshot_nodes_json, snapshot_edges_json, started_at, finished_at, created_at, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('legacy-run', 'legacy-workflow', 'default', '/legacy/workspace', '["legacy-node"]', 'failed', JSON.stringify(nodes), JSON.stringify(edges), 10, 20, 5, 'legacy error')
+
+    const { initAllHermesTables } = await import('../../packages/server/src/db/hermes/schemas')
+    initAllHermesTables()
+    const { getWorkflowRun, updateWorkflowRunNodeState } = await import('../../packages/server/src/db/hermes/workflow-run-store')
+
+    const columns = db.prepare('PRAGMA table_info(workflow_runs)').all() as Array<{ name: string }>
+    expect(columns.map(column => column.name)).toContain('node_states_json')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM workflow_runs WHERE id = ?').get('legacy-run')).toEqual({ count: 1 })
+
+    const migrated = getWorkflowRun('legacy-run')
+    expect(migrated).toMatchObject({
+      id: 'legacy-run', workflow_id: 'legacy-workflow', profile: 'default', workspace: '/legacy/workspace',
+      start_node_ids: ['legacy-node'], status: 'failed', snapshot_nodes: nodes, snapshot_edges: edges,
+      started_at: 10, finished_at: 20, created_at: 5, error: 'legacy error', node_states: {},
+    })
+
+    updateWorkflowRunNodeState('legacy-run', 'next', { status: 'skipped', reason: 'legacy branch not taken', started_at: 30, finished_at: 30 })
+    expect(getWorkflowRun('legacy-run')?.node_states).toEqual({
+      next: { status: 'skipped', reason: 'legacy branch not taken', started_at: 30, finished_at: 30 },
+    })
+
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_run_edge_results'").get()).toEqual({ name: 'workflow_run_edge_results' })
+    const indexes = db.prepare('PRAGMA index_list(workflow_run_edge_results)').all() as Array<{ name: string; unique: number }>
+    expect(indexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'uniq_workflow_run_edge_results_run_edge', unique: 1 }),
+    ]))
+  })
+
 })

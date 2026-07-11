@@ -172,6 +172,7 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   status: "TEXT NOT NULL DEFAULT 'queued'",
   snapshot_nodes_json: "TEXT NOT NULL DEFAULT '[]'",
   snapshot_edges_json: "TEXT NOT NULL DEFAULT '[]'",
+  node_states_json: "TEXT NOT NULL DEFAULT '{}'",
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -182,6 +183,30 @@ export const WORKFLOW_RUNS_INDEXES = {
   idx_workflow_runs_workflow: 'CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)',
   idx_workflow_runs_status: 'CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status)',
   idx_workflow_runs_created_at: 'CREATE INDEX IF NOT EXISTS idx_workflow_runs_created_at ON workflow_runs(created_at)',
+}
+
+export const WORKFLOW_RUN_EDGE_RESULTS_TABLE = 'workflow_run_edge_results'
+
+export const WORKFLOW_RUN_EDGE_RESULTS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  run_id: 'TEXT NOT NULL',
+  workflow_id: 'TEXT NOT NULL',
+  edge_id: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL',
+  target_node_id: 'TEXT NOT NULL',
+  status: "TEXT NOT NULL DEFAULT 'not_taken'",
+  reason: "TEXT NOT NULL DEFAULT ''",
+  context_json: "TEXT NOT NULL DEFAULT '{}'",
+  sequence: 'INTEGER NOT NULL DEFAULT 0',
+  evaluated_at: 'INTEGER NOT NULL',
+  created_at: 'INTEGER NOT NULL',
+}
+
+export const WORKFLOW_RUN_EDGE_RESULTS_INDEXES = {
+  idx_workflow_run_edge_results_run: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_results_run ON workflow_run_edge_results(run_id, sequence)',
+  idx_workflow_run_edge_results_workflow: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_results_workflow ON workflow_run_edge_results(workflow_id)',
+  idx_workflow_run_edge_results_source: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_results_source ON workflow_run_edge_results(run_id, source_node_id)',
+  uniq_workflow_run_edge_results_run_edge: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_edge_results_run_edge ON workflow_run_edge_results(run_id, edge_id)',
 }
 
 export const WORKFLOW_RUN_NODE_SESSIONS_TABLE = 'workflow_run_node_sessions'
@@ -789,6 +814,9 @@ export function initAllHermesTables(): void {
     })
     syncTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, {
       indexes: WORKFLOW_RUNS_INDEXES,
+    })
+    syncTable(WORKFLOW_RUN_EDGE_RESULTS_TABLE, WORKFLOW_RUN_EDGE_RESULTS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_RESULTS_INDEXES,
     })
     syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
       indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,

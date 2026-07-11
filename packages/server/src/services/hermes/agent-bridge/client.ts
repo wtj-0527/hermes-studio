@@ -64,6 +64,10 @@ export interface AgentBridgeResponse {
   [key: string]: unknown
 }
 
+export interface AgentBridgeAsyncCompletionAck extends AgentBridgeResponse {
+  acked: boolean
+}
+
 export interface AgentBridgeChatStarted extends AgentBridgeResponse {
   run_id: string
   session_id: string
@@ -93,6 +97,17 @@ export interface AgentBridgeRunResult extends AgentBridgeResponse {
   events: unknown[]
   result?: unknown
   error?: string | null
+}
+
+export interface AgentBridgeAsyncCompletion {
+  delegation_id: string
+  session_key: string
+  profile: string
+  text: string
+}
+
+export interface AgentBridgeAsyncCompletions extends AgentBridgeResponse {
+  completions: AgentBridgeAsyncCompletion[]
 }
 
 export interface AgentBridgeSessionTitle extends AgentBridgeResponse {
@@ -419,6 +434,14 @@ export class AgentBridgeClient {
 
   ping(): Promise<AgentBridgeResponse> {
     return this.request({ action: 'ping' })
+  }
+
+  listAsyncCompletions(profile: string): Promise<AgentBridgeAsyncCompletions> {
+    return this.request<AgentBridgeAsyncCompletions>({ action: 'async_completions_list', profile })
+  }
+
+  ackAsyncCompletion(delegationId: string, profile: string): Promise<AgentBridgeAsyncCompletionAck> {
+    return this.request<AgentBridgeAsyncCompletionAck>({ action: 'async_completion_ack', delegation_id: delegationId, profile })
   }
 
   chat(

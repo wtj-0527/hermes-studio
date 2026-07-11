@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections import OrderedDict
 import json
 import os
 import queue
@@ -132,6 +133,8 @@ class AgentSession:
 
 
 class AgentPool:
+    ASYNC_COMPLETION_DELIVERED_LIMIT = 2048
+
     def __init__(self) -> None:
         self._sessions: dict[str, AgentSession] = {}
         self._runs: dict[str, RunRecord] = {}
@@ -146,6 +149,62 @@ class AgentPool:
         self._approval_handlers: dict[str, Callable[..., str]] = {}
         self._exec_ask_depth = 0
         self._exec_ask_previous: str | None = None
+        self._async_completion_pending: dict[str, dict[str, Any]] = {}
+        self._async_completion_delivered: OrderedDict[str, None] = OrderedDict()
+
+    def _collect_async_completions(self) -> None:
+        try:
+            from tools.process_registry import process_registry
+        except Exception:
+            return
+        unrelated: list[Any] = []
+        # Consume only the snapshot present at request start, then restore all
+        # unrelated notifications in their original relative order.
+        for _ in range(process_registry.completion_queue.qsize()):
+            try:
+                event = process_registry.completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(event, dict) and event.get("type") == "async_delegation":
+                delegation_id = str(event.get("delegation_id") or "").strip()
+                if delegation_id and delegation_id not in self._async_completion_delivered:
+                    self._async_completion_pending.setdefault(delegation_id, event)
+            else:
+                unrelated.append(event)
+        for event in unrelated:
+            process_registry.completion_queue.put(event)
+
+    def list_async_completions(self) -> list[dict[str, str]]:
+        from tools.process_registry import format_process_notification
+        with self._lock:
+            self._collect_async_completions()
+            result: list[dict[str, str]] = []
+            for delegation_id, event in self._async_completion_pending.items():
+                session_key = str(event.get("session_key") or "").strip()
+                session = self._sessions.get(session_key)
+                if session is None or session.running:
+                    continue
+                text = format_process_notification(event)
+                if text:
+                    result.append({
+                        "delegation_id": delegation_id,
+                        "session_key": session_key,
+                        "profile": str(session.config.get("profile") or "default"),
+                        "text": str(text),
+                    })
+            return result
+
+    def ack_async_completion(self, delegation_id: str) -> dict[str, Any]:
+        key = str(delegation_id or "").strip()
+        if not key:
+            raise ValueError("delegation_id is required")
+        with self._lock:
+            self._async_completion_pending.pop(key, None)
+            self._async_completion_delivered[key] = None
+            self._async_completion_delivered.move_to_end(key)
+            while len(self._async_completion_delivered) > self.ASYNC_COMPLETION_DELIVERED_LIMIT:
+                self._async_completion_delivered.popitem(last=False)
+        return {"delegation_id": key, "acked": True}
 
     def get_or_create(
         self,

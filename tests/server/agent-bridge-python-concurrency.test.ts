@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 function runPython(script: string): void {
   try {
@@ -1331,6 +1331,79 @@ assert [cwd for _session_id, cwd in agent_b.seen] == ["/repo/b"], agent_b.seen
 assert terminal_tool._task_env_overrides["session-a"] == {"cwd": "/repo/a"}, terminal_tool._task_env_overrides
 assert terminal_tool._task_env_overrides["session-b"] == {"cwd": "/repo/b"}, terminal_tool._task_env_overrides
 assert runtime_cwd.resolve_agent_cwd() == "", runtime_cwd.resolve_agent_cwd()
+`)
+  })
+})
+
+// Regression: async delegate completions are exposed to TypeScript and acked explicitly.
+describe('agent bridge async delegation completion delivery', () => {
+  it('routes completion list and ack actions through an already loaded profile worker', () => {
+    const source = require('fs').readFileSync('packages/server/src/services/hermes/agent-bridge/python/bridge_broker.py', 'utf8')
+    expect(source).toContain('{"async_completions_list", "async_completion_ack"}')
+    expect(source).toContain('worker is None or not worker.running')
+  })
+  it('bounds acknowledged completion dedup retention and refreshes duplicate acknowledgements', () => {
+    runPython(String.raw`
+${harness}
+
+pool, _db = make_pool()
+limit = pool.ASYNC_COMPLETION_DELIVERED_LIMIT
+assert limit > 0
+
+for index in range(limit):
+    pool.ack_async_completion(f"deleg-{index}")
+
+size = len(pool._async_completion_delivered)
+pool.ack_async_completion("deleg-0")
+assert len(pool._async_completion_delivered) == size
+pool.ack_async_completion(f"deleg-{limit}")
+
+assert len(pool._async_completion_delivered) <= limit
+assert f"deleg-{limit}" in pool._async_completion_delivered
+assert "deleg-0" in pool._async_completion_delivered
+assert "deleg-1" not in pool._async_completion_delivered
+`)
+  })
+
+  it('collects, routes, retains, deduplicates, and explicitly acknowledges completions', () => {
+    runPython(String.raw`
+${harness}
+
+process_registry = types.ModuleType("tools.process_registry")
+process_registry.process_registry = types.SimpleNamespace(completion_queue=__import__("queue").Queue())
+process_registry.format_process_notification = lambda event: "formatted:" + event["delegation_id"]
+sys.modules["tools.process_registry"] = process_registry
+
+pool, _db = make_pool()
+parent = bridge.AgentSession(session_id="parent", agent=object(), config={"profile": "default"}, running=True)
+other = bridge.AgentSession(session_id="other", agent=object(), config={"profile": "other-profile"}, running=False)
+pool._sessions.update({"parent": parent, "other": other})
+q = process_registry.process_registry.completion_queue
+unrelated_a = {"type": "process", "id": "a"}; unrelated_b = {"type": "process", "id": "b"}
+event = {"type": "async_delegation", "delegation_id": "deleg-1", "session_key": "parent"}
+q.put(unrelated_a); q.put(event); q.put(unrelated_b); q.put(dict(event))
+
+# Busy is retained and unrelated queue entries preserve relative order.
+assert pool.list_async_completions() == []
+assert q.get_nowait() is unrelated_a
+assert q.get_nowait() is unrelated_b
+parent.running = False
+listed = pool.list_async_completions()
+assert listed == [{"delegation_id": "deleg-1", "session_key": "parent", "profile": "default", "text": "formatted:deleg-1"}], listed
+assert pool.list_async_completions() == listed
+
+# Missing sessions remain pending; loaded idle sessions route by session_key/profile.
+q.put({"type": "async_delegation", "delegation_id": "deleg-missing", "session_key": "missing"})
+q.put({"type": "async_delegation", "delegation_id": "deleg-2", "session_key": "other"})
+listed = pool.list_async_completions()
+assert [x["delegation_id"] for x in listed] == ["deleg-1", "deleg-2"], listed
+assert listed[1]["session_key"] == "other" and listed[1]["profile"] == "other-profile"
+
+assert pool.ack_async_completion("deleg-1") == {"delegation_id": "deleg-1", "acked": True}
+assert [x["delegation_id"] for x in pool.list_async_completions()] == ["deleg-2"]
+q.put(dict(event))
+assert [x["delegation_id"] for x in pool.list_async_completions()] == ["deleg-2"]
+assert pool.ack_async_completion("deleg-1") == {"delegation_id": "deleg-1", "acked": True}
 `)
   })
 })

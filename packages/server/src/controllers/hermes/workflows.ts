@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { getWorkflowManager, type WorkflowRerunFromNodeInput, type WorkflowRunNowInput, type WorkflowUpdateInput } from '../../services/workflow-manager'
 import { listUserProfiles } from '../../db/hermes/users-store'
-import { listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
+import { getWorkflowRun, listWorkflowRunNodeSessions, listWorkflowRuns } from '../../db/hermes/workflow-run-store'
 import { logger } from '../../services/logger'
 
 const MAX_BATCH_DELETE = 200
@@ -135,6 +135,18 @@ export async function get(ctx: Context) {
   }
   if (denyProfileAccess(ctx, workflow.profile)) return
   ctx.body = { workflow }
+}
+
+export async function getRun(ctx: Context) {
+  const id = requiredId(ctx); if (!id) return
+  const runId = typeof ctx.params?.runId === 'string' ? ctx.params.runId.trim() : ''
+  if (!runId) { ctx.status = 400; ctx.body = { error: 'runId is required' }; return }
+  const workflow = getWorkflowManager().get(id)
+  if (!workflow) { ctx.status = 404; ctx.body = { error: 'workflow not found' }; return }
+  if (denyProfileAccess(ctx, workflow.profile)) return
+  const run = getWorkflowRun(runId)
+  if (!run || run.workflow_id !== id) { ctx.status = 404; ctx.body = { error: 'workflow run not found' }; return }
+  ctx.body = { run: { ...run, node_sessions: listWorkflowRunNodeSessions(run.id) } }
 }
 
 export async function listRuns(ctx: Context) {
@@ -420,7 +432,15 @@ export async function runNow(ctx: Context) {
   if (timeoutMs.value !== undefined) runInput.timeoutMs = timeoutMs.value
 
   const manager = getWorkflowManager()
-  void manager.runNow(id, runInput).catch((err: any) => {
+  let prepared
+  try {
+    prepared = manager.prepareRun(id, runInput.startNodeIds)
+  } catch (err: any) {
+    ctx.status = Number(err?.status) || 400
+    ctx.body = { error: err?.message || 'invalid workflow graph' }
+    return
+  }
+  void manager.runPrepared(prepared, runInput).catch((err: any) => {
     const message = err?.message || 'failed to run workflow'
     logger.error(err, '[workflow] async run failed for workflow %s', id)
     manager.setRuntimeStatus(id, {

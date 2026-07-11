@@ -42,7 +42,8 @@ export interface WorkflowBatchDeleteResult {
 }
 
 export type WorkflowRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
-export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'canceled'
+export type WorkflowRunNodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'skipped' | 'canceled'
+export type WorkflowRunEdgeResultStatus = 'taken' | 'not_taken' | 'error'
 
 export interface WorkflowRunRecord {
   id: string
@@ -59,6 +60,30 @@ export interface WorkflowRunRecord {
   updated_at?: number
   error: string | null
   node_sessions?: WorkflowRunNodeSessionRecord[]
+  edge_results?: WorkflowRunEdgeResultRecord[]
+  node_states: Record<string, WorkflowRunNodeState>
+}
+
+export interface WorkflowRunNodeState {
+  status: WorkflowRunNodeStatus
+  reason?: string
+  started_at: number | null
+  finished_at: number | null
+}
+
+export interface WorkflowRunEdgeResultRecord {
+  id: string
+  run_id: string
+  workflow_id: string
+  edge_id: string
+  source_node_id: string
+  target_node_id: string
+  status: WorkflowRunEdgeResultStatus
+  reason: string
+  context: Record<string, unknown>
+  sequence: number
+  evaluated_at: number
+  created_at: number
 }
 
 export interface WorkflowRunNodeSessionRecord {
@@ -150,6 +175,11 @@ export async function listWorkflowRuns(id: string, limit = 100): Promise<Workflo
   params.set('limit', String(limit))
   const res = await request<{ runs: WorkflowRunRecord[] }>(`/api/hermes/workflows/${encodeURIComponent(id)}/runs?${params}`)
   return res.runs
+}
+
+export async function fetchWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {
+  const res = await request<{ run: WorkflowRunRecord }>(`/api/hermes/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
+  return res.run
 }
 
 export async function stopWorkflowRun(id: string, runId: string): Promise<WorkflowRunRecord> {

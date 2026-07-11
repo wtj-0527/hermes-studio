@@ -222,6 +222,12 @@ class BridgeServer:
         if action == "list":
             return self.pool.list_sessions()
 
+        if action == "async_completions_list":
+            return {"completions": self.pool.list_async_completions()}
+
+        if action == "async_completion_ack":
+            return self.pool.ack_async_completion(str(req.get("delegation_id") or ""))
+
         if action == "shutdown":
             self._shutdown_all_mcp_servers()
             self._stop.set()

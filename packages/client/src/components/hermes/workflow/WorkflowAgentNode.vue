@@ -28,6 +28,10 @@ const statusTip = computed(() => (
     : ''
 ))
 const isCodingAgent = computed(() => props.data.agent !== 'hermes')
+const joinModeOptions = computed(() => [
+  { label: t('workflow.orchestration.joinAll'), value: 'all' },
+  { label: t('workflow.orchestration.joinAny'), value: 'any' },
+])
 const apiModeOptions = computed(() => [
   { label: t('codingAgents.protocolOpenAiChat'), value: 'chat_completions' },
   { label: t('codingAgents.protocolOpenAiResponses'), value: 'codex_responses' },
@@ -175,6 +179,14 @@ async function uploadImages(files: File[]) {
         :disabled="data.readonly"
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
+      />
+      <NSelect
+        :value="data.joinMode"
+        :options="joinModeOptions"
+        size="small"
+        :disabled="data.readonly"
+        :placeholder="t('workflow.orchestration.joinMode')"
+        @update:value="value => updateField('joinMode', value as 'all' | 'any')"
       />
       <NSelect
         :value="data.skills"

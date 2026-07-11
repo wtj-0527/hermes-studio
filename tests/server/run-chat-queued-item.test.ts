@@ -469,3 +469,85 @@ describe('ChatRunSocket queued bridge runs', () => {
     }))
   })
 })
+
+describe('ChatRunSocket async delegation completion polling', () => {
+  it('runs idle routed completions through runAndWait, exposes room events, acks terminal results, and deduplicates', async () => {
+    vi.useFakeTimers()
+    bridgeMock.listAsyncCompletions = vi.fn()
+      .mockResolvedValueOnce({ ok: true, completions: [{ delegation_id: 'd1', session_key: 'session-1', profile: 'default', text: 'formatted completion' }] })
+      .mockResolvedValue({ ok: true, completions: [] })
+    bridgeMock.ackAsyncCompletion = vi.fn().mockResolvedValue({ ok: true, acked: true })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, namespace } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).sessionMap.set('session-1', { messages: [], events: [], queue: [], isWorking: false, profile: 'default' })
+    const run = vi.spyOn(server, 'runAndWait').mockImplementation(async (data: any) => {
+      namespace.to(`session:${data.session_id}`).emit('message.delta', { delta: 'visible' })
+      return { ok: true, event: 'run.completed', session_id: data.session_id, run_id: 'run-follow-up-1' }
+    })
+    server.init()
+    await (server as any).pollAsyncCompletions()
+    await Promise.resolve(); await Promise.resolve()
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ input: 'formatted completion', session_id: 'session-1', profile: 'default' }), { profile: 'default' })
+    expect(namespace.to).toHaveBeenCalledWith('session:session-1')
+    expect(bridgeMock.ackAsyncCompletion).toHaveBeenCalledWith('d1', 'default')
+    await (server as any).pollAsyncCompletions()
+    expect(run).toHaveBeenCalledTimes(1)
+    server.close()
+    expect((server as any).asyncCompletionTimer).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('retries a completion when the worker reports that it was not acked', async () => {
+    bridgeMock.listAsyncCompletions = vi.fn().mockResolvedValue({ ok: true, completions: [{ delegation_id: 'd1', session_key: 'session-1', profile: 'default', text: 'x' }] })
+    bridgeMock.ackAsyncCompletion = vi.fn().mockResolvedValue({ ok: true, acked: false })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const server = new ChatRunSocket(makeServerHarness().io as any)
+    ;(server as any).sessionMap.set('session-1', { messages: [], events: [], queue: [], isWorking: false, profile: 'default' })
+    const run = vi.spyOn(server, 'runAndWait').mockResolvedValue({ ok: true, event: 'run.completed', session_id: 'session-1', run_id: 'run-1' })
+
+    await (server as any).pollAsyncCompletions()
+    await vi.waitFor(() => expect((server as any).asyncCompletionInFlight.has('d1')).toBe(false))
+    await (server as any).pollAsyncCompletions()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    expect(bridgeMock.ackAsyncCompletion).toHaveBeenCalledTimes(2)
+    server.close()
+  })
+
+  it('does not ack a completion when the synthetic follow-up fails before a bridge run starts', async () => {
+    bridgeMock.listAsyncCompletions = vi.fn().mockResolvedValue({ ok: true, completions: [{ delegation_id: 'd1', session_key: 'session-1', profile: 'default', text: 'x' }] })
+    bridgeMock.ackAsyncCompletion = vi.fn()
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const server = new ChatRunSocket(makeServerHarness().io as any)
+    ;(server as any).sessionMap.set('session-1', { messages: [], events: [], queue: [], isWorking: false, profile: 'default' })
+    const run = vi.spyOn(server, 'runAndWait').mockResolvedValue({
+      ok: false,
+      event: 'run.failed',
+      session_id: 'session-1',
+      run_id: '',
+      error: 'bridge failed to start',
+    })
+
+    await (server as any).pollAsyncCompletions()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    expect(bridgeMock.ackAsyncCompletion).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect((server as any).asyncCompletionInFlight.has('d1')).toBe(false))
+
+    await (server as any).pollAsyncCompletions()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    expect(bridgeMock.ackAsyncCompletion).not.toHaveBeenCalled()
+    server.close()
+  })
+
+  it('retains busy completions and suppresses overlapping delegation ids', async () => {
+    bridgeMock.listAsyncCompletions = vi.fn().mockResolvedValue({ ok: true, completions: [{ delegation_id: 'd1', session_key: 'session-1', profile: 'default', text: 'x' }] })
+    bridgeMock.ackAsyncCompletion = vi.fn()
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const server = new ChatRunSocket(makeServerHarness().io as any)
+    ;(server as any).sessionMap.set('session-1', { messages: [], events: [], queue: [], isWorking: true, profile: 'default' })
+    const run = vi.spyOn(server, 'runAndWait')
+    await (server as any).pollAsyncCompletions()
+    expect(run).not.toHaveBeenCalled(); expect(bridgeMock.ackAsyncCompletion).not.toHaveBeenCalled()
+    server.close()
+  })
+})

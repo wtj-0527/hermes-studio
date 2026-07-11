@@ -56,6 +56,7 @@ import type {
   WorkflowNodeStatus,
   WorkflowSelectOption,
 } from '@/components/hermes/workflow/types'
+import { buildWorkflowEdgeOrchestration, edgeEvidenceVisual, edgeOrchestrationLabel, normalizeWorkflowEdgeOrchestration, legacyWorkflowEdgeId, normalizeWorkflowJoinMode, withWorkflowEdgeOrchestration, type WorkflowConditionOperator, type WorkflowEdgeOrchestration, type WorkflowRoute } from '@/components/hermes/workflow/orchestration'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 
 import '@vue-flow/core/dist/style.css'
@@ -96,6 +97,9 @@ interface WorkflowEdge {
   type: 'smoothstep'
   animated?: boolean
   markerEnd?: MarkerType
+  label?: string
+  class?: string
+  data: { orchestration: WorkflowEdgeOrchestration }
 }
 
 interface WorkflowDocument {
@@ -112,6 +116,12 @@ interface WorkflowDocument {
 
 const nextNodeIndex = ref(1)
 const contextMenuVisible = ref(false)
+const edgeEditorVisible = ref(false)
+const edgeRoute = ref<WorkflowRoute>('success')
+const edgeConditionEnabled = ref(false)
+const edgeConditionPath = ref('')
+const edgeConditionOperator = ref<WorkflowConditionOperator>('equals')
+const edgeConditionValue = ref('')
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const contextMenuOpenedAt = ref(0)
@@ -246,7 +256,7 @@ const contextMenuOptions = computed<DropdownOption[]>(() => {
     return options
   }
   if (target?.type === 'edge') {
-    return [{ key: 'delete-edge', label: t('workflow.actions.deleteEdge') }]
+    return [{ key: 'edit-edge', label: t('workflow.orchestration.editEdge') }, { key: 'delete-edge', label: t('workflow.actions.deleteEdge') }]
   }
   return [{ key: 'delete-node', label: t('workflow.actions.deleteNode') }]
 })
@@ -351,6 +361,7 @@ function makeNode(
       input: data.input || '',
       skills: data.skills || [],
       images: data.images || [],
+      joinMode: normalizeWorkflowJoinMode(data.joinMode),
       status: data.status || 'idle',
       agentOptions: agentOptions.value,
       skillOptions: skillOptionsForAgent(data.agent || agentOptions.value[0]?.value || 'hermes'),
@@ -543,7 +554,7 @@ function cloneWorkflowDefinitionNodes(source: WorkflowNode[]): WorkflowNode[] {
 }
 
 function cloneWorkflowEdges(source: WorkflowEdge[]): WorkflowEdge[] {
-  return source.map(edge => ({ ...edge }))
+  return source.map(edge => ({ ...edge, data: withWorkflowEdgeOrchestration(edge.data, normalizeWorkflowEdgeOrchestration(edge.data?.orchestration)) }))
 }
 
 function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
@@ -562,12 +573,13 @@ function serializeWorkflowNodes(source: WorkflowNode[]): unknown[] {
       input: node.data.input,
       skills: [...node.data.skills],
       images: [...node.data.images],
+      orchestration: { joinMode: normalizeWorkflowJoinMode(node.data.joinMode) },
     },
   }))
 }
 
 function serializeWorkflowEdges(source: WorkflowEdge[]): unknown[] {
-  return source.map(edge => ({ ...edge }))
+  return source.map(edge => ({ ...edge, data: withWorkflowEdgeOrchestration(edge.data, normalizeWorkflowEdgeOrchestration(edge.data?.orchestration)) }))
 }
 
 function normalizeWorkflowViewport(raw: unknown): WorkflowViewport {
@@ -607,6 +619,7 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
       input: data.input,
       skills: Array.isArray(data.skills) ? data.skills.filter(item => typeof item === 'string') : [],
       images: Array.isArray(data.images) ? data.images.filter(item => typeof item === 'string') : [],
+      joinMode: normalizeWorkflowJoinMode((data as any).orchestration?.joinMode),
       status: 'idle',
     },
   )
@@ -620,11 +633,11 @@ function normalizeStoredNode(raw: unknown, index: number): WorkflowNode {
   }
 }
 
-function normalizeStoredEdge(raw: unknown): WorkflowEdge | null {
+function normalizeStoredEdge(raw: unknown, index: number): WorkflowEdge | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   if (typeof record.source !== 'string' || typeof record.target !== 'string') return null
   return {
-    id: typeof record.id === 'string' && record.id ? record.id : `${record.source}-${record.target}`,
+    id: typeof record.id === 'string' && record.id ? record.id : legacyWorkflowEdgeId(record.source, record.target, index),
     source: record.source,
     target: record.target,
     sourceHandle: typeof record.sourceHandle === 'string' ? record.sourceHandle : 'output',
@@ -632,6 +645,8 @@ function normalizeStoredEdge(raw: unknown): WorkflowEdge | null {
     type: 'smoothstep',
     animated: Boolean(record.animated),
     markerEnd: MarkerType.ArrowClosed,
+    data: withWorkflowEdgeOrchestration(record.data, normalizeWorkflowEdgeOrchestration(record.data?.orchestration)),
+    label: edgeOrchestrationLabel(record.data?.orchestration),
   }
 }
 
@@ -776,12 +791,15 @@ function workflowNodeStatusFromRun(run: WorkflowRunRecord, nodeId: string): Work
   if (runtimeStatus?.runId === run.id) return workflowNodeStatusFromRuntime(runtimeStatus, nodeId)
 
   const nodeSession = run.node_sessions?.find(session => session.node_id === nodeId)
+  const durableState = run.node_states?.[nodeId]
+  if (!nodeSession && durableState?.status === 'skipped') return 'skipped'
   switch (nodeSession?.status) {
     case 'queued':
     case 'running':
     case 'completed':
     case 'failed':
     case 'canceled':
+    case 'skipped':
       return nodeSession.status
     case 'blocked':
       return 'failed'
@@ -865,7 +883,11 @@ async function applyWorkflowRunSnapshot(run: WorkflowRunRecord) {
       readonly: true,
     }),
   }))
-  edges.value = run.snapshot_edges.map(normalizeStoredEdge).filter((edge): edge is WorkflowEdge => Boolean(edge))
+  edges.value = run.snapshot_edges.map(normalizeStoredEdge).filter((edge): edge is WorkflowEdge => Boolean(edge)).map(edge => {
+    const evidence = run.edge_results?.find(result => result.edge_id === edge.id)
+    const visual = edgeEvidenceVisual(evidence?.status)
+    return { ...edge, animated: visual.animated, class: visual.className, label: evidence ? `${edge.label} · ${evidence.status}` : edge.label }
+  })
   nextNodeIndex.value = nextIndexFromNodes(nodes.value)
   await nextTick()
   applyingWorkflow = false
@@ -1468,8 +1490,40 @@ function handleConnect(connection: Connection) {
     id: `${connection.source}-${connection.target}`,
     type: 'smoothstep',
     animated: true,
+    data: { orchestration: { route: 'success' } },
+    label: 'success',
     markerEnd: MarkerType.ArrowClosed,
   }]
+}
+
+function openEdgeEditor(edgeId: string) {
+  const edge = edges.value.find(item => item.id === edgeId)
+  if (!edge) return
+  const policy = normalizeWorkflowEdgeOrchestration(edge.data?.orchestration)
+  edgeRoute.value = policy.route
+  edgeConditionEnabled.value = Boolean(policy.condition)
+  edgeConditionPath.value = policy.condition?.path || ''
+  edgeConditionOperator.value = policy.condition?.operator || 'equals'
+  edgeConditionValue.value = policy.condition?.value === undefined ? '' : JSON.stringify(policy.condition.value)
+  edgeEditorVisible.value = true
+}
+function saveEdgeOrchestration() {
+  const target = contextMenuTarget.value
+  if (target?.type !== 'edge') return
+  let value: unknown = edgeConditionValue.value
+  if (value !== '') { try { value = JSON.parse(edgeConditionValue.value) } catch { value = edgeConditionValue.value } }
+  let orchestration: WorkflowEdgeOrchestration
+  try {
+    orchestration = buildWorkflowEdgeOrchestration(
+      edgeRoute.value, edgeConditionEnabled.value, edgeConditionPath.value, edgeConditionOperator.value, value,
+    )
+  } catch {
+    message.error(t('workflow.orchestration.invalidCondition'))
+    return
+  }
+  edges.value = edges.value.map(edge => edge.id === target.id ? { ...edge, data: withWorkflowEdgeOrchestration(edge.data, orchestration), label: edgeOrchestrationLabel(orchestration) } : edge)
+  edgeEditorVisible.value = false
+  closeContextMenu()
 }
 
 function deleteNode(nodeId: string) {
@@ -1535,6 +1589,7 @@ function handleContextMenuSelect(key: string | number) {
     closeContextMenu()
     return
   }
+  if (key === 'edit-edge' && target?.type === 'edge') { openEdgeEditor(target.id); return }
   if (key === 'delete-node' && target?.type === 'node') {
     deleteNode(target.id)
   }
@@ -1596,6 +1651,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   if (node.data.status === 'running') return '#2563eb'
   if (node.data.status === 'completed') return '#16a34a'
   if (node.data.status === 'failed') return '#dc2626'
+  if (node.data.status === 'skipped') return '#a855f7'
   if (node.data.status === 'canceled') return '#f97316'
   return '#9ca3af'
 }
@@ -1878,6 +1934,19 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
           </NButton>
         </NSpace>
       </template>
+    </NModal>
+
+    <NModal v-model:show="edgeEditorVisible" preset="card" :title="t('workflow.orchestration.edgePolicy')" style="width: min(520px, 92vw)">
+      <NSpace vertical>
+        <NSelect v-model:value="edgeRoute" :options="[{ label: 'success', value: 'success' }, { label: 'failure', value: 'failure' }, { label: 'always', value: 'always' }]" />
+        <NCheckbox v-model:checked="edgeConditionEnabled">{{ t('workflow.orchestration.condition') }}</NCheckbox>
+        <template v-if="edgeConditionEnabled">
+          <NInput v-model:value="edgeConditionPath" :placeholder="t('workflow.orchestration.path')" />
+          <NSelect v-model:value="edgeConditionOperator" :options="['equals','not_equals','exists','truthy','contains'].map(value => ({ label: value, value }))" />
+          <NInput v-if="!['exists','truthy'].includes(edgeConditionOperator)" v-model:value="edgeConditionValue" :placeholder="t('workflow.orchestration.value')" />
+        </template>
+        <NButton type="primary" @click="saveEdgeOrchestration">{{ t('common.save') }}</NButton>
+      </NSpace>
     </NModal>
 
     <div ref="workflowBodyRef" class="workflow-body">
@@ -2851,4 +2920,10 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
     display: none;
   }
 }
+</style>
+
+<style scoped lang="scss">
+:deep(.vue-flow__edge.edge-taken .vue-flow__edge-path) { stroke: #16a34a; stroke-width: 2.5; }
+:deep(.vue-flow__edge.edge-not-taken .vue-flow__edge-path) { stroke: #94a3b8; stroke-dasharray: 5 5; opacity: 0.55; }
+:deep(.vue-flow__edge.edge-error .vue-flow__edge-path) { stroke: #dc2626; stroke-width: 2.5; }
 </style>

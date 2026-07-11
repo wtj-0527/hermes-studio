@@ -658,6 +658,10 @@ export default {
     title: '工作流',
     profile: '配置',
     namePlaceholder: '工作流名称',
+    orchestration: {
+      invalidCondition: '条件无效，请输入有效的条件路径和操作符。',
+      edgePolicy: '连线策略', editEdge: '编辑连线策略', condition: '条件', path: '条件路径', value: '条件值（JSON 或文本）', joinMode: '汇合模式', joinAll: '等待所有入站路由', joinAny: '任一入站路由命中时运行',
+    },
     workspace: {
       title: '选择工作区',
       select: '选择工作区',
@@ -718,6 +722,7 @@ export default {
       running: '运行中',
       completed: '已完成',
       failed: '失败',
+      skipped: '已跳过',
       canceled: '已取消',
     },
     runs: {

@@ -563,6 +563,10 @@ export default {
     title: 'Рабочий процесс',
     profile: 'Профиль',
     namePlaceholder: 'Название рабочего процесса',
+    orchestration: {
+      invalidCondition: 'Недопустимое условие. Укажите корректный путь и оператор.',
+      edgePolicy: 'Политика перехода', editEdge: 'Изменить политику перехода', condition: 'Условие', path: 'Путь условия', value: 'Значение условия (JSON или текст)', joinMode: 'Режим объединения', joinAll: 'Ждать все входящие маршруты', joinAny: 'Запустить при срабатывании любого маршрута',
+    },
     workspace: {
       title: 'Выбрать рабочую область',
       select: 'Выбрать рабочую область',
@@ -623,6 +627,7 @@ export default {
       running: 'Выполняется',
       completed: 'Завершено',
       failed: 'Ошибка',
+      skipped: 'Пропущено',
       canceled: 'Отменено',
     },
     runs: {

@@ -2,7 +2,7 @@ import { io, type Socket } from 'socket.io-client'
 import { getActiveProfileName, getApiKey, getBaseUrlValue } from '../client'
 import type { WorkflowRecord } from './workflows'
 
-export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
+export type WorkflowRuntimeState = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'skipped' | 'canceled'
 
 export interface WorkflowRuntimeStatus {
   workflowId: string
