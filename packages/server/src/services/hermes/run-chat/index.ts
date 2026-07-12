@@ -9,6 +9,7 @@
 
 import { normalizeReasoningEffort, type ReasoningEffort } from '../../../../../shared/reasoning-effort'
 import { validateReasoningEffortForProfile } from '../../reasoning-capability'
+import { getEffectiveModelReferenceForProfile } from '../../../controllers/hermes/models'
 import type { Server, Socket } from 'socket.io'
 import { logger } from '../../logger'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
@@ -104,6 +105,20 @@ export interface ChatRunAndWaitResult {
 }
 
 type ChatRunAutoApprovalChoice = 'once' | 'session' | 'always'
+
+type RunModelTarget = { provider?: string; model?: string; apiMode?: string; api_mode?: string }
+
+async function resolveInheritedRunModelTarget(profile: string, data: RunModelTarget): Promise<void> {
+  const provider = String(data.provider || '').trim()
+  const model = String(data.model || '').trim()
+  const apiMode = String(data.apiMode || data.api_mode || '').trim()
+  if (provider || model || apiMode) return
+  const effective = await getEffectiveModelReferenceForProfile(profile)
+  if (!effective) return
+  data.provider = effective.provider
+  data.model = effective.model
+  data.apiMode = effective.apiMode
+}
 
 export class ChatRunSocket {
   private nsp: ReturnType<Server['of']>
@@ -280,6 +295,7 @@ export class ChatRunSocket {
       }
       if (normalizedReasoningEffort) {
         try {
+          await resolveInheritedRunModelTarget(runProfile, data)
           data.reasoning_effort = await validateReasoningEffortForProfile({
             profile: runProfile,
             provider: data.provider || '',
@@ -785,6 +801,7 @@ export class ChatRunSocket {
     else delete data.reasoning_effort
     const profile = options.profile || data.profile || getSession(sessionId)?.profile || getActiveProfileName() || 'default'
     if (reasoningEffort) {
+      await resolveInheritedRunModelTarget(profile, data)
       data.reasoning_effort = await validateReasoningEffortForProfile({
         profile,
         provider: data.provider || '',

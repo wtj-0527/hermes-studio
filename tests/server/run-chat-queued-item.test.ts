@@ -6,6 +6,7 @@ const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
 const ensureReadyMock = vi.hoisted(() => vi.fn())
 const validateReasoningEffortMock = vi.hoisted(() => vi.fn(async (input: any) => input.reasoningEffort || ''))
+const getEffectiveModelReferenceMock = vi.hoisted(() => vi.fn(async () => ({ provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses' })))
 const sessionCommandMocks = vi.hoisted(() => ({
   handleSessionCommand: vi.fn(),
   isSessionCommand: vi.fn(() => false),
@@ -37,6 +38,10 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-
 
 vi.mock('../../packages/server/src/services/reasoning-capability', () => ({
   validateReasoningEffortForProfile: validateReasoningEffortMock,
+}))
+
+vi.mock('../../packages/server/src/controllers/hermes/models', () => ({
+  getEffectiveModelReferenceForProfile: getEffectiveModelReferenceMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', () => sessionCommandMocks)
@@ -112,6 +117,7 @@ describe('ChatRunSocket queued bridge runs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     validateReasoningEffortMock.mockImplementation(async (input: any) => input.reasoningEffort || '')
+    getEffectiveModelReferenceMock.mockResolvedValue({ provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses' })
     ensureReadyMock.mockResolvedValue({
       reachable: true,
       status: 'ready',
@@ -130,6 +136,89 @@ describe('ChatRunSocket queued bridge runs', () => {
     })
   })
 
+  it('resolves the profile effective tuple before validating an inherited socket reasoning effort', async () => {
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, _socket, data) => {
+      expect(data).toMatchObject({
+        provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoning_effort: 'max',
+      })
+      data.onEvent?.('run.completed', { run_id: 'socket-effective-target', output: 'ok' })
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).onConnection(socket)
+
+    await handlers.get('run')?.({
+      session_id: 'session-1', input: 'hello', source: 'cli', profile: 'default', reasoning_effort: 'max',
+    })
+
+    expect(getEffectiveModelReferenceMock).toHaveBeenCalledWith('default')
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith({
+      profile: 'default', provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoningEffort: 'max',
+    })
+  })
+
+  it('resolves the profile effective tuple before validating an inherited runAndWait reasoning effort', async () => {
+    handleBridgeRunMock.mockImplementationOnce(async (_nsp, _socket, data) => {
+      expect(data).toMatchObject({
+        provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoning_effort: 'max',
+      })
+      data.onEvent?.('run.completed', { run_id: 'wait-effective-target', output: 'ok' })
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const result = await server.runAndWait({
+      session_id: 'session-1', input: 'workflow', source: 'workflow', reasoning_effort: 'max',
+    }, { profile: 'default' })
+
+    expect(result.ok).toBe(true)
+    expect(getEffectiveModelReferenceMock).toHaveBeenCalledWith('default')
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith({
+      profile: 'default', provider: 'custom:test', model: 'gpt-5.6-sol', apiMode: 'codex_responses', reasoningEffort: 'max',
+    })
+  })
+
+  it('keeps a partial socket target fail-closed instead of inheriting missing tuple fields', async () => {
+    validateReasoningEffortMock.mockRejectedValueOnce(new Error('reasoning_capability_unknown: custom:test//'))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).onConnection(socket)
+
+    await handlers.get('run')?.({
+      session_id: 'session-1', input: 'hello', source: 'cli', profile: 'default',
+      provider: 'custom:test', reasoning_effort: 'max',
+    })
+
+    expect(getEffectiveModelReferenceMock).not.toHaveBeenCalled()
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith({
+      profile: 'default', provider: 'custom:test', model: '', apiMode: '', reasoningEffort: 'max',
+    })
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect((server as any).sessionMap.get('session-1')).toBeUndefined()
+  })
+
+  it('keeps a partial runAndWait target fail-closed instead of inheriting missing tuple fields', async () => {
+    validateReasoningEffortMock.mockRejectedValueOnce(new Error('reasoning_capability_unknown: custom:test//'))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    await expect(server.runAndWait({
+      session_id: 'session-1', input: 'workflow', source: 'workflow',
+      provider: 'custom:test', reasoning_effort: 'max',
+    }, { profile: 'default' })).rejects.toThrow(/reasoning_capability_unknown/)
+
+    expect(getEffectiveModelReferenceMock).not.toHaveBeenCalled()
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith({
+      profile: 'default', provider: 'custom:test', model: '', apiMode: '', reasoningEffort: 'max',
+    })
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect((server as any).sessionMap.get('session-1')).toBeUndefined()
+  })
+
   it('rejects unsupported socket effort before bridge dispatch or queue mutation', async () => {
     validateReasoningEffortMock.mockRejectedValueOnce(new Error('reasoning_effort_unsupported: max'))
     const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
@@ -142,6 +231,7 @@ describe('ChatRunSocket queued bridge runs', () => {
       provider: 'p', model: 'm', apiMode: 'responses', reasoning_effort: 'max',
     })
 
+    expect(getEffectiveModelReferenceMock).not.toHaveBeenCalled()
     expect(validateReasoningEffortMock).toHaveBeenCalledWith({
       profile: 'default', provider: 'p', model: 'm', apiMode: 'responses', reasoningEffort: 'max',
     })
@@ -166,7 +256,10 @@ describe('ChatRunSocket queued bridge runs', () => {
       provider: 'p', model: 'm', apiMode: 'responses', reasoning_effort: 'max',
     }, { profile: 'default' })
     expect(result.ok).toBe(true)
-    expect(validateReasoningEffortMock).toHaveBeenCalledWith(expect.objectContaining({ reasoningEffort: 'max' }))
+    expect(getEffectiveModelReferenceMock).not.toHaveBeenCalled()
+    expect(validateReasoningEffortMock).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'p', model: 'm', apiMode: 'responses', reasoningEffort: 'max',
+    }))
   })
 
   it('rejects runAndWait capability failures before backend dispatch', async () => {
