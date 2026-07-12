@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertReasoningEffortSupported,
+  resolveReasoningCapabilityFromModelCatalog,
   resolveReasoningCapabilityFromConfig,
 } from '../../packages/server/src/services/reasoning-capability'
 
@@ -19,6 +20,36 @@ const config = {
 }
 
 describe('reasoning capability', () => {
+  it('accepts the exact canonical effort when an authenticated live model catalog declares reasoning support', () => {
+    expect(resolveReasoningCapabilityFromModelCatalog({
+      data: [{ id: 'gpt-5.6-sol', capabilities: { reasoning: true, vision: true } }],
+    }, {
+      provider: 'custom:gateway', model: 'gpt-5.6-sol', apiMode: 'chat_completions',
+    })).toEqual({ levels: null, source: 'live_model_catalog' })
+
+    expect(assertReasoningEffortSupported('max', {
+      levels: null,
+      source: 'live_model_catalog',
+    }, {
+      provider: 'custom:gateway', model: 'gpt-5.6-sol', apiMode: 'chat_completions',
+    })).toBe('max')
+  })
+
+  it('fails closed when the live model catalog denies or omits reasoning support', () => {
+    const reference = {
+      provider: 'custom:gateway', model: 'gpt-5.6-sol', apiMode: 'chat_completions',
+    }
+    expect(resolveReasoningCapabilityFromModelCatalog({
+      data: [{ id: 'gpt-5.6-sol', capabilities: { reasoning: false } }],
+    }, reference)).toBeNull()
+    expect(resolveReasoningCapabilityFromModelCatalog({
+      data: [{ id: 'gpt-5.6-sol', capabilities: { vision: true } }],
+    }, reference)).toBeNull()
+    expect(resolveReasoningCapabilityFromModelCatalog({
+      data: [{ id: 'other', capabilities: { reasoning: true } }],
+    }, reference)).toBeNull()
+  })
+
   it('resolves only explicit provider/model/apiMode metadata', () => {
     expect(resolveReasoningCapabilityFromConfig(config, {
       provider: 'axonhub', model: 'gpt-5.6-sol', apiMode: 'codex_responses',

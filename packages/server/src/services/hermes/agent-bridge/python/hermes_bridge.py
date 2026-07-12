@@ -68,6 +68,7 @@ _RUNTIME_PATCH_NAMES = (
     "_sanitize_surrogates",
     "_suppress_bridge_platform_hint",
     "_title_user_message",
+    "temporary_reasoning_override",
     "_worker_profile",
 )
 
@@ -97,6 +98,7 @@ _POOL_PATCH_NAMES = (
     "_resolve_runtime",
     "_suppress_bridge_platform_hint",
     "_title_user_message",
+    "temporary_reasoning_override",
     "_tool_names_from_definitions",
 )
 

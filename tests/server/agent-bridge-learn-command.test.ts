@@ -53,6 +53,12 @@ bridge_runtime._resolve_model = lambda *_args, **_kwargs: ("model", "provider")
 bridge_runtime._resolve_runtime = lambda *_args, **_kwargs: {}
 bridge_runtime._suppress_bridge_platform_hint = contextlib.nullcontext
 bridge_runtime._title_user_message = lambda value: value
+
+@contextlib.contextmanager
+def _temporary_reasoning_override(*_args, **_kwargs):
+    yield
+
+bridge_runtime.temporary_reasoning_override = _temporary_reasoning_override
 bridge_runtime._tool_names_from_definitions = lambda *_args, **_kwargs: []
 
 @contextlib.contextmanager
@@ -102,6 +108,13 @@ agent_pkg = types.ModuleType("agent")
 agent_pkg.__path__ = []
 sys.modules["agent"] = agent_pkg
 sys.modules.pop("agent.learn_prompt", None)
+import builtins
+real_import = builtins.__import__
+def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "agent.learn_prompt":
+        raise ModuleNotFoundError(name)
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = blocked_import
 
 pool = bridge_pool.AgentPool()
 print(json.dumps(pool.dispatch_command("session-1", "/learn from docs", "default")))

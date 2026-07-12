@@ -40,6 +40,7 @@ from bridge_runtime import (
     _resolve_runtime,
     _suppress_bridge_platform_hint,
     _title_user_message,
+    temporary_reasoning_override,
     _tool_names_from_definitions,
 )
 
@@ -1277,31 +1278,18 @@ class AgentPool:
                     kwargs["system_message"] = instructions
                 if conversation_history is not None:
                     kwargs["conversation_history"] = conversation_history
-                # Local patch (reasoning-effort): per-run reasoning effort override (Web UI brain button).
-                # Mutates session.agent.reasoning_config in place — restored after run.
-                _saved_reasoning_config = None
-                _did_override_reasoning = False
-                if reasoning_effort:
-                    try:
-                        from hermes_constants import parse_reasoning_effort
-                        override_cfg = parse_reasoning_effort(str(reasoning_effort).strip())
-                        # parse_reasoning_effort returns None for invalid input; only
-                        # override when we got a recognized value.
-                        if override_cfg is not None:
-                            _saved_reasoning_config = getattr(session.agent, "reasoning_config", None)
-                            session.agent.reasoning_config = override_cfg
-                            _did_override_reasoning = True
-                    except Exception:
-                        # Non-fatal: fall through to default reasoning_config
-                        pass
-                try:
+                # Studio validates the canonical effort before bridge dispatch. Apply the
+                # exact per-run override and restore both generic Hermes reasoning state and
+                # the chat_completions wire override after the call.
+                with temporary_reasoning_override(
+                    session.agent,
+                    reasoning_effort,
+                    getattr(session.agent, "api_mode", None),
+                ):
                     result = session.agent.run_conversation(
                         agent_message,
                         **kwargs,
                     )
-                finally:
-                    if _did_override_reasoning:
-                        session.agent.reasoning_config = _saved_reasoning_config
                 result = _jsonable(result if isinstance(result, dict) else {"value": result})
                 result_for_tail_sync = result
                 self._sync_result_tail_to_session_db(

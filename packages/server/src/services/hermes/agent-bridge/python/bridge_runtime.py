@@ -894,6 +894,39 @@ def _log_worker_startup_context(profile: str | None) -> None:
         })
 
 
+@contextmanager
+def temporary_reasoning_override(agent: Any, reasoning_effort: str | None, api_mode: str | None):
+    """Apply one Studio run's reasoning override and restore all agent state."""
+    if not reasoning_effort:
+        yield
+        return
+    from hermes_constants import parse_reasoning_effort
+
+    override_cfg = parse_reasoning_effort(str(reasoning_effort).strip())
+    if override_cfg is None:
+        raise ValueError(f"unsupported reasoning effort: {reasoning_effort}")
+    had_reasoning_config = hasattr(agent, "reasoning_config")
+    saved_reasoning_config = getattr(agent, "reasoning_config", None)
+    had_request_overrides = hasattr(agent, "request_overrides")
+    saved_request_overrides = getattr(agent, "request_overrides", None)
+    try:
+        agent.reasoning_config = override_cfg
+        if str(api_mode or "").strip() == "chat_completions":
+            request_overrides = dict(saved_request_overrides or {})
+            request_overrides["reasoning_effort"] = str(reasoning_effort).strip()
+            agent.request_overrides = request_overrides
+        yield
+    finally:
+        if had_reasoning_config:
+            agent.reasoning_config = saved_reasoning_config
+        elif hasattr(agent, "reasoning_config"):
+            delattr(agent, "reasoning_config")
+        if had_request_overrides:
+            agent.request_overrides = saved_request_overrides
+        elif hasattr(agent, "request_overrides"):
+            delattr(agent, "request_overrides")
+
+
 def _load_reasoning_config() -> dict[str, Any] | None:
     _ensure_agent_imports()
     try:
