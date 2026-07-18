@@ -41,6 +41,13 @@ export interface AgentBridgeRequestOptions {
   serialize?: boolean
 }
 
+export interface AgentBridgeExecutionPolicy {
+  allowedToolsets?: string[]
+  allowedTools?: string[]
+  skipMemory?: boolean
+  skipContextFiles?: boolean
+}
+
 export interface AgentBridgeChatOptions {
   force_compress?: boolean
   storage_message?: AgentBridgeMessage
@@ -53,6 +60,7 @@ export interface AgentBridgeChatOptions {
   /** Local patch (reasoning-effort): per-session reasoning effort override.
    * Empty/undefined = use config.yaml default. */
   reasoning_effort?: string
+  executionPolicy?: AgentBridgeExecutionPolicy
 }
 
 export type AgentBridgeMessage =
@@ -113,6 +121,10 @@ export interface AgentBridgeContextEstimate extends AgentBridgeResponse {
   profile?: string
   model?: string
   provider?: string
+  allowed_toolsets?: string[] | null
+  allowed_tools?: string[] | null
+  skip_memory?: boolean
+  skip_context_files?: boolean
 }
 
 export interface AgentBridgeCommandResult extends AgentBridgeResponse {
@@ -440,6 +452,7 @@ export class AgentBridgeClient {
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.workspace ? { workspace: options.workspace } : {}),
+      ...(options.executionPolicy ? { execution_policy: options.executionPolicy } : {}),
       ...(options.source ? { source: options.source } : {}),
       ...(options.wait ? { wait: true } : {}),
       ...(options.timeout ? { timeout: options.timeout } : {}),
@@ -454,7 +467,7 @@ export class AgentBridgeClient {
     messages: unknown[],
     instructions?: string,
     profile?: string,
-    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace'> = {},
+    options: Pick<AgentBridgeChatOptions, 'model' | 'provider' | 'workspace' | 'executionPolicy'> = {},
   ): Promise<AgentBridgeContextEstimate> {
     return this.request<AgentBridgeContextEstimate>({
       action: 'context_estimate',
@@ -465,6 +478,7 @@ export class AgentBridgeClient {
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.workspace ? { workspace: options.workspace } : {}),
+      ...(options.executionPolicy ? { execution_policy: options.executionPolicy } : {}),
     })
   }
 

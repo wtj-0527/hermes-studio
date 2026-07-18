@@ -57,6 +57,17 @@ export interface QueuedRun {
   originSocketId?: string
   goalContinuation?: boolean
   reasoningEffort?: string
+  workflowId?: string
+  workflowRunId?: string
+  workflowNodeId?: string
+  executionPolicy?: WorkflowExecutionPolicy
+}
+
+export interface WorkflowExecutionPolicy {
+  allowedToolsets?: string[]
+  allowedTools?: string[]
+  skipMemory?: boolean
+  skipContextFiles?: boolean
 }
 
 export interface SessionState {
@@ -113,6 +124,10 @@ export interface BridgeContextState {
   model?: string
   provider?: string
   workspace?: string
+  allowedToolsets?: string[] | null
+  allowedTools?: string[] | null
+  skipMemory?: boolean
+  skipContextFiles?: boolean
 }
 
 export type ChatRunSource = 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'

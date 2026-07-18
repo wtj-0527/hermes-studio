@@ -112,6 +112,12 @@ export interface WorkflowNodeSnapshot {
     skills: string[]
     images: string[]
     approvalRequired: boolean
+    executionPolicy?: {
+      allowedToolsets?: string[]
+      allowedTools?: string[]
+      skipMemory?: boolean
+      skipContextFiles?: boolean
+    }
     orchestration: { join: 'all' | 'any' }
   }
 }
@@ -207,6 +213,35 @@ function stringArray(value: unknown): string[] {
 
 const WORKFLOW_REASONING_EFFORTS = new Set(['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const WORKFLOW_API_MODES = new Set(['chat_completions', 'codex_responses', 'anthropic_messages'])
+const WORKFLOW_EXECUTION_POLICY_KEYS = new Set(['allowedToolsets', 'allowedTools', 'skipMemory', 'skipContextFiles'])
+
+function normalizeWorkflowExecutionPolicy(nodeId: string, value: unknown): WorkflowNodeSnapshot['data']['executionPolicy'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+  }
+  const record = value as Record<string, unknown>
+  if (!Object.keys(record).every(key => WORKFLOW_EXECUTION_POLICY_KEYS.has(key))) {
+    throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+  }
+  for (const key of ['allowedToolsets', 'allowedTools'] as const) {
+    if (Object.prototype.hasOwnProperty.call(record, key)
+      && (!Array.isArray(record[key]) || !(record[key] as unknown[]).every(item => typeof item === 'string' && item.trim()))) {
+      throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+    }
+  }
+  for (const key of ['skipMemory', 'skipContextFiles'] as const) {
+    if (Object.prototype.hasOwnProperty.call(record, key) && typeof record[key] !== 'boolean') {
+      throw new Error(`workflow node ${nodeId} has invalid executionPolicy`)
+    }
+  }
+  return {
+    ...(Object.prototype.hasOwnProperty.call(record, 'allowedToolsets') ? { allowedToolsets: stringArray(record.allowedToolsets) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'allowedTools') ? { allowedTools: stringArray(record.allowedTools) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'skipMemory') ? { skipMemory: record.skipMemory as boolean } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, 'skipContextFiles') ? { skipContextFiles: record.skipContextFiles as boolean } : {}),
+  }
+}
+
 export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null {
   const record = raw && typeof raw === 'object' ? raw as Record<string, any> : {}
   const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : ''
@@ -243,6 +278,12 @@ export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null
   if (!WORKFLOW_REASONING_EFFORTS.has(reasoningEffort)) {
     throw new Error(`workflow node ${id} has invalid reasoningEffort`)
   }
+  const executionPolicy = Object.prototype.hasOwnProperty.call(data, 'executionPolicy')
+    ? normalizeWorkflowExecutionPolicy(id, data.executionPolicy)
+    : undefined
+  if (executionPolicy && agent !== 'hermes') {
+    throw new Error(`workflow node ${id} executionPolicy is supported for Hermes nodes only`)
+  }
   const rawPosition = record.position && typeof record.position === 'object' && !Array.isArray(record.position)
     ? record.position as Record<string, unknown>
     : null
@@ -264,6 +305,7 @@ export function normalizeWorkflowNode(raw: unknown): WorkflowNodeSnapshot | null
       skills: stringArray(data.skills),
       images: stringArray(data.images),
       approvalRequired: data.approvalRequired === true,
+      executionPolicy,
       orchestration: { join },
     },
   }
@@ -889,7 +931,7 @@ function isChatRunWaitTimeout(message: string, timeoutMs?: number): boolean {
   return typeof timeoutMs === 'number' && timeoutMs > 0 && message === `chat-run timed out after ${timeoutMs}ms`
 }
 
-function withoutRemovedWorkflowNodePolicy(nodes: unknown[] | undefined): unknown[] | undefined {
+function withoutEmbeddedWorkflowNodePolicy(nodes: unknown[] | undefined): unknown[] | undefined {
   return nodes?.map(node => {
     if (!node || typeof node !== 'object' || Array.isArray(node)) return node
     const record = node as Record<string, unknown>
@@ -899,12 +941,12 @@ function withoutRemovedWorkflowNodePolicy(nodes: unknown[] | undefined): unknown
   })
 }
 
-function withoutRemovedWorkflowEdgeNodePolicy(edges: unknown[] | undefined): unknown[] | undefined {
+function withoutEmbeddedWorkflowEdgeNodePolicy(edges: unknown[] | undefined): unknown[] | undefined {
   return edges?.map(edge => {
     if (!edge || typeof edge !== 'object' || Array.isArray(edge)) return edge
     const record = edge as Record<string, unknown>
-    const sourceNode = withoutRemovedWorkflowNodePolicy([record.sourceNode])?.[0]
-    const targetNode = withoutRemovedWorkflowNodePolicy([record.targetNode])?.[0]
+    const sourceNode = withoutEmbeddedWorkflowNodePolicy([record.sourceNode])?.[0]
+    const targetNode = withoutEmbeddedWorkflowNodePolicy([record.targetNode])?.[0]
     return {
       ...record,
       ...(record.sourceNode === undefined ? {} : { sourceNode }),
@@ -913,11 +955,10 @@ function withoutRemovedWorkflowEdgeNodePolicy(edges: unknown[] | undefined): unk
   })
 }
 
-function withoutRemovedWorkflowRecordPolicy(workflow: WorkflowRecord): WorkflowRecord {
+function withoutEmbeddedWorkflowRecordPolicy(workflow: WorkflowRecord): WorkflowRecord {
   return {
     ...workflow,
-    nodes: withoutRemovedWorkflowNodePolicy(workflow.nodes) || [],
-    edges: withoutRemovedWorkflowEdgeNodePolicy(workflow.edges) || [],
+    edges: withoutEmbeddedWorkflowEdgeNodePolicy(workflow.edges) || [],
   }
 }
 
@@ -927,19 +968,19 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
   private readonly pendingNodeApprovals = new Map<string, PendingNodeApproval>()
 
   list(profile?: string | null): WorkflowRecord[] {
-    return listWorkflows(profile).map(withoutRemovedWorkflowRecordPolicy)
+    return listWorkflows(profile).map(withoutEmbeddedWorkflowRecordPolicy)
   }
 
   get(id: string): WorkflowRecord | null {
     const workflow = getWorkflow(id)
-    return workflow ? withoutRemovedWorkflowRecordPolicy(workflow) : null
+    return workflow ? withoutEmbeddedWorkflowRecordPolicy(workflow) : null
   }
 
   create(input: WorkflowCreateInput): WorkflowRecord {
     return createWorkflow({
       ...input,
-      nodes: withoutRemovedWorkflowNodePolicy(input.nodes),
-      edges: withoutRemovedWorkflowEdgeNodePolicy(input.edges),
+      nodes: input.nodes,
+      edges: withoutEmbeddedWorkflowEdgeNodePolicy(input.edges),
     })
   }
 
@@ -948,8 +989,8 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
     if (!existing) return null
     return updateWorkflow(id, {
       ...input,
-      nodes: withoutRemovedWorkflowNodePolicy(input.nodes ?? existing.nodes),
-      edges: withoutRemovedWorkflowEdgeNodePolicy(input.edges ?? existing.edges),
+      nodes: input.nodes ?? existing.nodes,
+      edges: withoutEmbeddedWorkflowEdgeNodePolicy(input.edges ?? existing.edges),
     })
   }
 
@@ -1358,6 +1399,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
           ...(node.data.agent === 'hermes' ? {} : { apiMode: node.data.apiMode || undefined }),
           one_shot_model: true,
           ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+          ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
         }, { profile, user: args.user, timeoutMs: remainingTimeoutMs, approvalChoice: 'once' })
         if (isCanceled()) throw new Error(getWorkflowRun(run.id)?.error || 'Workflow run canceled')
         if (!runResult.ok) {
@@ -1860,6 +1902,7 @@ export class WorkflowManager extends EventEmitter<WorkflowManagerEvents> {
             ...(node.data.agent === 'hermes' ? {} : { apiMode: node.data.apiMode || undefined }),
             one_shot_model: true,
             ...(node.data.reasoningEffort !== 'default' ? { reasoning_effort: node.data.reasoningEffort } : {}),
+            ...(node.data.executionPolicy ? { execution_policy: node.data.executionPolicy } : {}),
           }, {
             profile,
             user: args.user,

@@ -129,48 +129,49 @@ describe('workflow manager', () => {
     expect(() => normalizeWorkflowNode({ id: 'bad', type: 'agent', data: { orchestration: { join: 'some' } } })).toThrow('workflow node bad has invalid orchestration join')
   })
 
-  it('ignores removed legacy execution-policy fields while preserving the upstream execution identity', async () => {
+  it('normalizes an exact execution identity policy and rejects malformed explicit values', async () => {
     const { normalizeWorkflowNode } = await import('../../packages/server/src/services/workflow-manager')
-    const normalized = normalizeWorkflowNode({ id: 'legacy-policy', type: 'agent', data: {
+    expect(normalizeWorkflowNode({ id: 'exact', type: 'agent', data: {
       agent: 'hermes', provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions',
       reasoningEffort: 'high', executionPolicy: {
         allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true, skipContextFiles: false,
       },
-    } })
-    expect(normalized?.data).toMatchObject({
+    } })?.data).toMatchObject({
       provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions', reasoningEffort: 'high',
+      executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true, skipContextFiles: false },
     })
-    expect(normalized?.data).not.toHaveProperty('executionPolicy')
-    expect(() => normalizeWorkflowNode({ id: 'malformed-legacy-policy', type: 'agent', data: {
+    expect(() => normalizeWorkflowNode({ id: 'bad-policy', type: 'agent', data: {
       executionPolicy: { allowedToolsets: 'browser' },
-    } })).not.toThrow()
+    } })).toThrow('workflow node bad-policy has invalid executionPolicy')
   })
 
-  it('strips removed legacy execution-policy fields from embedded edge node copies at every persistence boundary', async () => {
+  it('strips execution-policy fields from embedded edge node copies at every persistence boundary', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { createWorkflow, getWorkflow } = await import('../../packages/server/src/db/hermes/workflow-store')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
     const manager = new WorkflowManager()
-    const legacyPolicy = { allowedToolsets: [], allowedTools: ['terminal'], skipMemory: true, skipContextFiles: true }
+    const policy = { allowedToolsets: [], allowedTools: ['terminal'], skipMemory: true, skipContextFiles: true }
     const raw = createWorkflow({
-      name: `Legacy embedded policy ${Date.now()}`,
+      name: `Embedded policy ${Date.now()}`,
       profile: 'default',
       nodes: [
-        { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
+        { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: policy } },
         { id: 'target', type: 'agent', data: { agent: 'hermes' } },
       ],
       edges: [{
         id: 'source-target', source: 'source', target: 'target',
-        sourceNode: { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
-        targetNode: { id: 'target', type: 'agent', data: { agent: 'hermes', executionPolicy: legacyPolicy } },
+        sourceNode: { id: 'source', type: 'agent', data: { agent: 'hermes', executionPolicy: policy } },
+        targetNode: { id: 'target', type: 'agent', data: { agent: 'hermes', executionPolicy: policy } },
       } as any],
     } as any)
     try {
-      expect(JSON.stringify(manager.get(raw.id))).not.toContain('executionPolicy')
-      expect(JSON.stringify(manager.list().find(workflow => workflow.id === raw.id))).not.toContain('executionPolicy')
-      expect(JSON.stringify(manager.update(raw.id, { name: `${raw.name} updated` }))).not.toContain('executionPolicy')
-      expect(JSON.stringify(getWorkflow(raw.id))).not.toContain('executionPolicy')
+      const persisted = manager.get(raw.id)
+      expect(persisted?.nodes[0]?.data).toHaveProperty('executionPolicy', policy)
+      expect(JSON.stringify(persisted?.edges)).not.toContain('executionPolicy')
+      expect(JSON.stringify(manager.list().find(workflow => workflow.id === raw.id)?.edges)).not.toContain('executionPolicy')
+      expect(JSON.stringify(manager.update(raw.id, { name: `${raw.name} updated` })?.edges)).not.toContain('executionPolicy')
+      expect(JSON.stringify(getWorkflow(raw.id)?.edges)).not.toContain('executionPolicy')
 
       const created = manager.create({
         name: `Create embedded policy ${Date.now()}`,
@@ -179,13 +180,14 @@ describe('workflow manager', () => {
         edges: raw.edges,
       })
       try {
-        expect(JSON.stringify(created)).not.toContain('executionPolicy')
-        expect(JSON.stringify(getWorkflow(created.id))).not.toContain('executionPolicy')
+        expect(created.nodes[0]?.data).toHaveProperty('executionPolicy', policy)
+        expect(JSON.stringify(created.edges)).not.toContain('executionPolicy')
+        expect(JSON.stringify(getWorkflow(created.id)?.edges)).not.toContain('executionPolicy')
       } finally { await manager.delete(created.id) }
     } finally { await manager.delete(raw.id) }
   })
 
-  it('freezes the selected target but leaves Hermes api mode owned by its provider profile', async () => {
+  it('freezes and forwards execution policy while leaving Hermes api mode profile-owned', async () => {
     const { initAllStores } = await import('../../packages/server/src/db/hermes/init')
     const { WorkflowManager } = await import('../../packages/server/src/services/workflow-manager')
     initAllStores()
@@ -199,20 +201,19 @@ describe('workflow manager', () => {
         executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true, skipContextFiles: true },
       } }], edges: [],
     })
-    expect(workflow.nodes[0]?.data).not.toHaveProperty('executionPolicy')
     try {
       const result = await manager.runNow(workflow.id)
       expect(result.run.status).toBe('completed')
       expect(result.run.snapshot_nodes[0]).toMatchObject({ data: {
         provider: 'custom:test', model: 'model-a', apiMode: 'chat_completions', reasoningEffort: 'high',
+        executionPolicy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true, skipContextFiles: true },
       } })
       expect(result.run.snapshot_nodes[0]?.position).toEqual({ x: -240, y: 360 })
-      expect(result.run.snapshot_nodes[0]?.data).not.toHaveProperty('executionPolicy')
       expect(chatRunMock.runAndWait).toHaveBeenCalledWith(expect.objectContaining({
         provider: 'custom:test', model: 'model-a', one_shot_model: true, reasoning_effort: 'high',
+        execution_policy: { allowedToolsets: [], allowedTools: ['browser_click'], skipMemory: true, skipContextFiles: true },
       }), expect.any(Object))
       expect(chatRunMock.runAndWait.mock.calls[0]?.[0]).not.toHaveProperty('apiMode')
-      expect(chatRunMock.runAndWait.mock.calls[0]?.[0]).not.toHaveProperty('execution_policy')
     } finally { await manager.delete(workflow.id) }
   })
 
@@ -249,16 +250,21 @@ describe('workflow manager', () => {
     const partial = manager.create({ name: `Partial tuple ${Date.now()}`, profile: 'default', nodes: [
       { id: 'agent', type: 'agent', data: { agent: 'hermes', provider: 'custom:test', input: 'work' } },
     ], edges: [] })
+    const unsupported = manager.create({ name: `Unsupported policy ${Date.now()}`, profile: 'default', nodes: [
+      { id: 'agent', type: 'agent', data: { agent: 'codex', input: 'work', executionPolicy: { allowedToolsets: [] } } },
+    ], edges: [] })
     const invalidApiMode = manager.create({ name: `Invalid apiMode ${Date.now()}`, profile: 'default', nodes: [
       { id: 'agent', type: 'agent', data: { agent: 'hermes', provider: 'custom:test', model: 'model-a', apiMode: 'unsupported', input: 'work' } },
     ], edges: [] })
     try {
       await expect(manager.runNow(partial.id)).rejects.toThrow('target must set provider, model, and apiMode together')
+      await expect(manager.runNow(unsupported.id)).rejects.toThrow('executionPolicy is supported for Hermes nodes only')
       await expect(manager.runNow(invalidApiMode.id)).rejects.toThrow('has invalid apiMode')
       expect(listWorkflowRuns(partial.id)).toEqual([])
+      expect(listWorkflowRuns(unsupported.id)).toEqual([])
       expect(listWorkflowRuns(invalidApiMode.id)).toEqual([])
       expect(chatRunMock.runAndWait).not.toHaveBeenCalled()
-    } finally { await manager.delete(partial.id); await manager.delete(invalidApiMode.id) }
+    } finally { await manager.delete(partial.id); await manager.delete(unsupported.id); await manager.delete(invalidApiMode.id) }
   })
 
   it('defers portable skill validation until runNow and fails closed before persisting a run', async () => {

@@ -275,7 +275,10 @@ describe('bridge run final context usage', () => {
     await handleBridgeRun(
       nsp,
       socket,
-      { input: 'hello', session_id: 'session-1' },
+      {
+        input: 'hello', session_id: 'session-1',
+        execution_policy: { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true },
+      },
       'default',
       sessionMap,
       bridge,
@@ -293,6 +296,7 @@ describe('bridge run final context usage', () => {
         model: 'gpt-test',
         provider: 'openai',
         workspace: '/tmp/hermes-bridge-final-context/default/workspace',
+        executionPolicy: { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true },
       },
     )
     expect(bridge.contextEstimate.mock.calls[0][2]).toContain('system prompt')
@@ -872,6 +876,10 @@ describe('bridge run final context usage', () => {
             fixed_context_tokens: 20_000,
             system_prompt_tokens: 3_000,
             tool_tokens: 17_000,
+            allowed_toolsets: null,
+            allowed_tools: null,
+            skip_memory: false,
+            skip_context_files: false,
           }],
         }
         yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
@@ -902,6 +910,155 @@ describe('bridge run final context usage', () => {
     expect(state.contextTokens).toBe(20_018)
     expect(emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
       contextTokens: 20_018,
+    }))
+  })
+
+  it('does not reuse fixed context across execution policy identities', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const executionPolicy = { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true }
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 100,
+        fixed_context_tokens: 82,
+        system_prompt_tokens: 82,
+        tool_tokens: 0,
+        message_count: 2,
+        tool_count: 0,
+        tool_names: [],
+        system_prompt_chars: 13,
+        allowed_toolsets: [],
+        allowed_tools: [],
+        skip_memory: true,
+        skip_context_files: true,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield {
+          run_id: 'run-1',
+          done: false,
+          status: 'running',
+          events: [{
+            event: 'bridge.context.ready',
+            fixed_context_tokens: 20_000,
+            system_prompt_tokens: 3_000,
+            tool_tokens: 17_000,
+            tool_count: 1,
+            allowed_toolsets: ['terminal'],
+            allowed_tools: ['terminal'],
+            skip_memory: false,
+            skip_context_files: false,
+          }],
+        }
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', execution_policy: executionPolicy },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(bridge.contextEstimate).toHaveBeenCalledWith(
+      'session-1',
+      [],
+      expect.any(String),
+      'default',
+      expect.objectContaining({ executionPolicy }),
+    )
+    expect(state.bridgeContext).toEqual(expect.objectContaining({
+      fixedContextTokens: 82,
+      toolCount: 0,
+      allowedToolsets: [],
+      allowedTools: [],
+      skipMemory: true,
+      skipContextFiles: true,
+    }))
+  })
+
+  it('treats fixed-context events without policy metadata as uncacheable', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const executionPolicy = { allowedToolsets: [], allowedTools: [], skipMemory: true, skipContextFiles: true }
+    const estimate = {
+      token_count: 100,
+      fixed_context_tokens: 82,
+      system_prompt_tokens: 82,
+      tool_tokens: 0,
+      message_count: 2,
+      tool_count: 0,
+      tool_names: [],
+      system_prompt_chars: 13,
+      allowed_toolsets: [],
+      allowed_tools: [],
+      skip_memory: true,
+      skip_context_files: true,
+    }
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockImplementation(async () => {
+        expect(state.bridgeContext).toEqual(expect.objectContaining({
+          fixedContextTokens: 20_000,
+          toolCount: 1,
+          allowedToolsets: undefined,
+          allowedTools: undefined,
+          skipMemory: undefined,
+          skipContextFiles: undefined,
+        }))
+        return estimate
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield {
+          run_id: 'run-1',
+          done: false,
+          status: 'running',
+          events: [{
+            event: 'bridge.context.ready',
+            fixed_context_tokens: 20_000,
+            system_prompt_tokens: 3_000,
+            tool_tokens: 17_000,
+            tool_count: 1,
+          }],
+        }
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', execution_policy: executionPolicy },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(bridge.contextEstimate).toHaveBeenCalledTimes(1)
+    expect(state.bridgeContext).toEqual(expect.objectContaining({
+      fixedContextTokens: 82,
+      toolCount: 0,
+      allowedToolsets: [],
+      allowedTools: [],
+      skipMemory: true,
+      skipContextFiles: true,
     }))
   })
 
@@ -940,6 +1097,10 @@ describe('bridge run final context usage', () => {
             fixed_context_tokens: 10_000,
             system_prompt_tokens: 2_000,
             tool_tokens: 8_000,
+            allowed_toolsets: null,
+            allowed_tools: null,
+            skip_memory: false,
+            skip_context_files: false,
           }],
         }
         yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }

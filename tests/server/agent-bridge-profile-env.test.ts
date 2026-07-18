@@ -519,6 +519,248 @@ print(json.dumps({
     })
   })
 
+  it('applies an exact allowed-tools whitelist after agent tool assembly', async () => {
+    await writeFile(join(tempDir, 'config.yaml'), 'model:\n  default: fake-model\n', 'utf-8')
+
+    const result = await runBridgeProbe(`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+root = os.environ["TEST_HERMES_HOME"]
+os.environ["HERMES_HOME"] = root
+os.environ["HERMES_AGENT_BRIDGE_BASE_HOME"] = root
+
+run_agent = types.ModuleType("run_agent")
+class FakeAgent:
+    def __init__(self, **kwargs):
+        self.tools = [
+            {"type": "function", "function": {"name": "browser_navigate"}},
+            {"type": "function", "function": {"name": "browser_snapshot"}},
+            {"type": "function", "function": {"name": "browser_type"}},
+        ]
+        self.valid_tool_names = {"browser_navigate", "browser_snapshot", "browser_type"}
+        self._context_engine_tool_names = {"browser_type"}
+        self._skip_mcp_refresh = False
+        self.skip_memory = kwargs.get("skip_memory")
+        self.skip_context_files = kwargs.get("skip_context_files")
+run_agent.AIAgent = FakeAgent
+sys.modules["run_agent"] = run_agent
+
+class FakeDbHolder:
+    error = None
+    def get_for_profile(self, profile):
+        return None
+
+bridge._ensure_agent_imports = lambda: None
+bridge._load_cfg = lambda: {"model": {"default": "fake-model"}, "agent": {}}
+bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
+bridge._load_enabled_toolsets = lambda: ["browser"]
+bridge._discover_bridge_mcp_tools = lambda: []
+bridge._load_reasoning_config = lambda: None
+bridge._load_service_tier = lambda: None
+
+pool = bridge.AgentPool()
+pool._db = FakeDbHolder()
+session = pool.get_or_create(
+    "session-exact-tools",
+    profile="default",
+    execution_policy={
+        "allowedToolsets": ["browser"],
+        "allowedTools": ["browser_navigate", "browser_snapshot"],
+        "skipMemory": True,
+        "skipContextFiles": True,
+    },
+)
+context_event = pool._bridge_context_ready_event(session, None, "default")
+context_estimate = pool.estimate_context(
+    "session-exact-tools",
+    profile="default",
+    execution_policy={
+        "allowedToolsets": ["browser"],
+        "allowedTools": ["browser_navigate", "browser_snapshot"],
+        "skipMemory": True,
+        "skipContextFiles": True,
+    },
+)
+status_config = pool.status("session-exact-tools")["config"]
+
+print(json.dumps({
+    "tools": [tool["function"]["name"] for tool in session.agent.tools],
+    "valid_tool_names": sorted(session.agent.valid_tool_names),
+    "context_engine_tool_names": sorted(session.agent._context_engine_tool_names),
+    "allowed_tools": session.config.get("allowed_tools"),
+    "skip_mcp_refresh": session.agent._skip_mcp_refresh,
+    "skip_memory": session.agent.skip_memory,
+    "skip_context_files": session.agent.skip_context_files,
+    "context_event_policy": {
+        "allowed_toolsets": context_event.get("allowed_toolsets"),
+        "allowed_tools": context_event.get("allowed_tools"),
+        "skip_memory": context_event.get("skip_memory"),
+        "skip_context_files": context_event.get("skip_context_files"),
+    },
+    "context_estimate_policy": {
+        "allowed_toolsets": context_estimate.get("allowed_toolsets"),
+        "allowed_tools": context_estimate.get("allowed_tools"),
+        "skip_memory": context_estimate.get("skip_memory"),
+        "skip_context_files": context_estimate.get("skip_context_files"),
+    },
+    "status_policy": {
+        "allowed_toolsets": status_config.get("allowed_toolsets"),
+        "allowed_tools": status_config.get("allowed_tools"),
+        "skip_memory": status_config.get("skip_memory"),
+        "skip_context_files": status_config.get("skip_context_files"),
+    },
+}))
+`)
+
+    const expectedPolicy = {
+      allowed_toolsets: ['browser'],
+      allowed_tools: ['browser_navigate', 'browser_snapshot'],
+      skip_memory: true,
+      skip_context_files: true,
+    }
+    expect(result).toEqual({
+      tools: ['browser_navigate', 'browser_snapshot'],
+      valid_tool_names: ['browser_navigate', 'browser_snapshot'],
+      context_engine_tool_names: [],
+      allowed_tools: ['browser_navigate', 'browser_snapshot'],
+      skip_mcp_refresh: true,
+      skip_memory: true,
+      skip_context_files: true,
+      context_event_policy: expectedPolicy,
+      context_estimate_policy: expectedPolicy,
+      status_policy: expectedPolicy,
+    })
+  })
+
+  it('recreates an idle session when its execution policy changes', async () => {
+    await writeFile(join(tempDir, 'config.yaml'), 'model:\n  default: fake-model\n', 'utf-8')
+
+    const result = await runBridgeProbe(`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec)
+sys.modules["hermes_bridge"] = bridge
+spec.loader.exec_module(bridge)
+
+root = os.environ["TEST_HERMES_HOME"]
+os.environ["HERMES_HOME"] = root
+os.environ["HERMES_AGENT_BRIDGE_BASE_HOME"] = root
+
+created = []
+run_agent = types.ModuleType("run_agent")
+class FakeAgent:
+    def __init__(self, **kwargs):
+        created.append(1)
+        self.tools = [
+            {"type": "function", "function": {"name": "browser_navigate"}},
+            {"type": "function", "function": {"name": "browser_snapshot"}},
+        ]
+        self.valid_tool_names = {"browser_navigate", "browser_snapshot"}
+        self._context_engine_tool_names = set()
+        self._skip_mcp_refresh = False
+run_agent.AIAgent = FakeAgent
+sys.modules["run_agent"] = run_agent
+
+class FakeDbHolder:
+    error = None
+    def get_for_profile(self, profile):
+        return None
+
+bridge._ensure_agent_imports = lambda: None
+bridge._load_cfg = lambda: {"model": {"default": "fake-model"}, "agent": {}}
+bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
+bridge._load_enabled_toolsets = lambda: ["browser"]
+bridge._discover_bridge_mcp_tools = lambda: []
+bridge._load_reasoning_config = lambda: None
+bridge._load_service_tier = lambda: None
+
+pool = bridge.AgentPool()
+pool._db = FakeDbHolder()
+first = pool.get_or_create(
+    "session-policy-change",
+    profile="default",
+    execution_policy={"allowedToolsets": ["browser"], "allowedTools": ["browser_navigate"], "skipMemory": True},
+)
+second = pool.get_or_create(
+    "session-policy-change",
+    profile="default",
+    execution_policy={"allowedToolsets": ["browser"], "allowedTools": ["browser_navigate"], "skipMemory": False},
+)
+
+print(json.dumps({
+    "created": len(created),
+    "same_session": first is second,
+    "tools": [tool["function"]["name"] for tool in second.agent.tools],
+}))
+`)
+
+    expect(result).toEqual({
+      created: 2,
+      same_session: false,
+      tools: ['browser_navigate'],
+    })
+  })
+
+  it('rejects execution policy changes while a session is running', async () => {
+    const result = await runBridgeProbe(`
+import importlib.util, json, os, sys, types
+spec = importlib.util.spec_from_file_location("hermes_bridge", os.environ["BRIDGE_PATH"])
+bridge = importlib.util.module_from_spec(spec); sys.modules["hermes_bridge"] = bridge; spec.loader.exec_module(bridge)
+os.environ["HERMES_HOME"] = os.environ["TEST_HERMES_HOME"]
+os.environ["HERMES_AGENT_BRIDGE_BASE_HOME"] = os.environ["TEST_HERMES_HOME"]
+created = []
+run_agent = types.ModuleType("run_agent")
+class FakeAgent:
+    def __init__(self, **kwargs):
+        created.append(1); self.tools = []; self.valid_tool_names = set(); self._context_engine_tool_names = set()
+run_agent.AIAgent = FakeAgent; sys.modules["run_agent"] = run_agent
+class FakeDb:
+    error = None
+    def get_for_profile(self, profile): return None
+bridge._ensure_agent_imports = lambda: None
+bridge._load_cfg = lambda: {"model": {"default": "fake"}, "agent": {}}
+bridge._resolve_runtime = lambda model, provider=None: {"provider": "fake"}
+bridge._load_enabled_toolsets = lambda: []
+bridge._discover_bridge_mcp_tools = lambda: []
+bridge._load_reasoning_config = lambda: None
+bridge._load_service_tier = lambda: None
+pool = bridge.AgentPool(); pool._db = FakeDb()
+session = pool.get_or_create("running-policy", profile="default", execution_policy={"allowedToolsets": []})
+session.running = True
+errors = []
+for profile, policy in [
+    ("default", {"allowedToolsets": [], "skipMemory": True}),
+    ("other", {"allowedToolsets": [], "skipMemory": True}),
+]:
+    try:
+        pool.get_or_create("running-policy", profile=profile, execution_policy=policy)
+    except Exception as exc:
+        errors.append(str(exc))
+print(json.dumps({"errors": errors, "created": len(created)}))
+`)
+    expect(result).toEqual({
+      errors: [
+        'session running-policy execution policy cannot change while running',
+        'session running-policy execution policy cannot change while running',
+      ],
+      created: 1,
+    })
+  })
+
   it('forwards agent turn-boundary callbacks without duplicating streamed text', async () => {
     await writeFile(join(tempDir, 'config.yaml'), 'model:\n  default: fake-model\n', 'utf-8')
 

@@ -27,7 +27,7 @@ import {
   recordBridgeMoaDisplayTool,
 } from './bridge-message'
 import { summarizeToolArguments } from './response-utils'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ContentBlock, QueuedRun, SessionState, WorkflowExecutionPolicy } from './types'
 import type { ChatMessage } from '../../../lib/context-compressor'
 import { resolveBridgeRunModelConfig, type RunModelGroup } from './model-config'
 import { filterBridgeToolCallMarkupDelta, flushPendingToolCallMarkup } from './bridge-delta'
@@ -246,13 +246,23 @@ function cacheBridgeContext(state: SessionState, data: Record<string, unknown> |
     profile: typeof data.profile === 'string' ? data.profile : state.bridgeContext?.profile,
     model: typeof data.model === 'string' ? data.model : state.bridgeContext?.model,
     provider: typeof data.provider === 'string' ? data.provider : state.bridgeContext?.provider,
+    allowedToolsets: Array.isArray(data.allowed_toolsets) ? data.allowed_toolsets.map(String) : data.allowed_toolsets === null ? null : undefined,
+    allowedTools: Array.isArray(data.allowed_tools) ? data.allowed_tools.map(String) : data.allowed_tools === null ? null : undefined,
+    skipMemory: typeof data.skip_memory === 'boolean' ? data.skip_memory : undefined,
+    skipContextFiles: typeof data.skip_context_files === 'boolean' ? data.skip_context_files : undefined,
     ...(resolvedWorkspace ? { workspace: resolvedWorkspace } : {}),
   }
 }
 
 function bridgeContextMatches(
   state: SessionState,
-  expected: { profile: string; model?: string | null; provider?: string | null; workspace?: string | null },
+  expected: {
+    profile: string
+    model?: string | null
+    provider?: string | null
+    workspace?: string | null
+    executionPolicy?: WorkflowExecutionPolicy
+  },
 ): boolean {
   const context = state.bridgeContext
   if (!context) return false
@@ -261,6 +271,17 @@ function bridgeContextMatches(
   if (expected.provider && context.provider && context.provider !== expected.provider) return false
   const expectedWorkspace = String(expected.workspace || '').trim()
   if (expectedWorkspace && context.workspace !== expectedWorkspace) return false
+  const expectedToolsets = Array.isArray(expected.executionPolicy?.allowedToolsets)
+    ? expected.executionPolicy.allowedToolsets.map(String)
+    : null
+  const expectedTools = Array.isArray(expected.executionPolicy?.allowedTools)
+    ? expected.executionPolicy.allowedTools.map(String)
+    : null
+  if (context.allowedToolsets === undefined || context.allowedTools === undefined) return false
+  if (JSON.stringify(context.allowedToolsets) !== JSON.stringify(expectedToolsets)) return false
+  if (JSON.stringify(context.allowedTools) !== JSON.stringify(expectedTools)) return false
+  if (context.skipMemory !== (expected.executionPolicy?.skipMemory === true)) return false
+  if (context.skipContextFiles !== (expected.executionPolicy?.skipContextFiles === true)) return false
   return true
 }
 
@@ -270,6 +291,7 @@ async function ensureBridgeFixedContext(args: {
   model?: string | null
   provider?: string | null
   workspace?: string | null
+  executionPolicy?: WorkflowExecutionPolicy
   instructions: string
   state: SessionState
   bridge: AgentBridgeClient
@@ -286,7 +308,12 @@ async function ensureBridgeFixedContext(args: {
       [],
       args.instructions,
       args.profile,
-      { model: args.model ?? undefined, provider: args.provider ?? undefined, workspace: args.workspace ?? undefined },
+      {
+        model: args.model ?? undefined,
+        provider: args.provider ?? undefined,
+        workspace: args.workspace ?? undefined,
+        executionPolicy: args.executionPolicy,
+      },
     )
     cacheBridgeContext(args.state, estimate, args.workspace)
     const fixedContextTokens = getCachedBridgeContextOverhead(args.state)
@@ -296,6 +323,10 @@ async function ensureBridgeFixedContext(args: {
       model: args.model,
       provider: args.provider,
       toolCount: estimate.tool_count,
+      allowedToolsets: estimate.allowed_toolsets,
+      allowedTools: estimate.allowed_tools,
+      skipMemory: estimate.skip_memory,
+      skipContextFiles: estimate.skip_context_files,
       systemPromptChars: estimate.system_prompt_chars,
       fixedContextTokens,
     }, '[chat-run-socket] fixed context estimate')
@@ -316,7 +347,7 @@ async function ensureBridgeFixedContext(args: {
 export async function handleBridgeRun(
   nsp: ReturnType<Server['of']>,
   socket: Socket,
-  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; one_shot_model?: boolean; onEvent?: (event: string, payload: any) => void },
+  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; workflow_id?: string; workflow_run_id?: string; workflow_node_id?: string; execution_policy?: WorkflowExecutionPolicy; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; one_shot_model?: boolean; onEvent?: (event: string, payload: any) => void },
   profile: string,
   sessionMap: Map<string, SessionState>,
   bridge: AgentBridgeClient,
@@ -490,6 +521,7 @@ export async function handleBridgeRun(
         model: resolvedModel,
         provider: resolvedProvider,
         workspace,
+        executionPolicy: data.execution_policy,
         instructions: fullInstructions,
         state,
         bridge,
@@ -542,6 +574,7 @@ export async function handleBridgeRun(
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(resolvedProvider ? { provider: resolvedProvider } : {}),
         ...(workspace ? { workspace } : {}),
+        ...(data.execution_policy ? { executionPolicy: data.execution_policy } : {}),
         // Local patch (reasoning-effort): per-session reasoning effort override.
         ...(data.reasoning_effort ? { reasoning_effort: data.reasoning_effort } : {}),
       },
@@ -594,6 +627,7 @@ export async function handleBridgeRun(
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        data.execution_policy,
       )
       if (chunk.done) {
         sawTerminalChunk = true
@@ -638,6 +672,7 @@ export async function handleBridgeRun(
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        data.execution_policy,
       )
     }
   } catch (err: any) {
@@ -661,6 +696,7 @@ export async function handleBridgeRun(
       model: resolvedModel,
       provider: resolvedProvider,
       workspace,
+      executionPolicy: data.execution_policy,
       instructions: fullInstructions,
       state,
       usage: errUsage,
@@ -865,6 +901,7 @@ async function refreshFinalContextUsage(args: {
   model?: string | null
   provider?: string | null
   workspace?: string | null
+  executionPolicy?: WorkflowExecutionPolicy
   instructions: string
   state: SessionState
   usage: { inputTokens: number; outputTokens: number }
@@ -887,6 +924,7 @@ async function refreshFinalContextUsage(args: {
       model: args.model,
       provider: args.provider,
       workspace: args.workspace,
+      executionPolicy: args.executionPolicy,
       instructions: args.instructions,
       state: args.state,
       bridge: args.bridge,
@@ -904,6 +942,11 @@ async function refreshFinalContextUsage(args: {
       model: args.model,
       provider: args.provider,
       messages: finalHistory.length,
+      toolCount: args.state.bridgeContext?.toolCount,
+      allowedToolsets: args.state.bridgeContext?.allowedToolsets,
+      allowedTools: args.state.bridgeContext?.allowedTools,
+      skipMemory: args.state.bridgeContext?.skipMemory,
+      skipContextFiles: args.state.bridgeContext?.skipContextFiles,
       fixedContextTokens: args.state.bridgeContext?.fixedContextTokens,
       messageTokens: finalMessageTokens,
       contextTokens,
@@ -1006,6 +1049,7 @@ async function applyBridgeChunkAsync(
   currentInputTokens = 0,
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
+  executionPolicy?: WorkflowExecutionPolicy,
 ): Promise<void> {
   if (state.activeRunMarker !== runMarker) {
     bridgeLogger.info({
@@ -1432,6 +1476,7 @@ async function applyBridgeChunkAsync(
     model: modelContext.model,
     provider: modelContext.provider,
     workspace,
+    executionPolicy,
     instructions,
     state,
     usage,
