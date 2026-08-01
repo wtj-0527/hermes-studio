@@ -1,4 +1,4 @@
-import { desktopBridge, hasDesktopBrowserBridge } from './desktop-bridge'
+import { desktopBridge, hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
 
 export const OPEN_DESKTOP_BROWSER_PANEL_EVENT = 'hermes:open-desktop-browser-panel'
 

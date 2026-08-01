@@ -55,7 +55,8 @@ import { isStoredSuperAdmin } from "@/api/client";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
 import { canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
 import { OPEN_SUBAGENT_STREAM_EVENT, type OpenSubagentStreamDetail } from "@/utils/hermes/subagent-stream";
-import { desktopBridge, hasDesktopBrowserBridge } from "@/utils/desktop-bridge";
+import { desktopBridge } from "@/utils/desktop-bridge";
+import { hasBrowserProvider } from "@/browser/provider";
 import { OPEN_DESKTOP_BROWSER_PANEL_EVENT } from "@/utils/desktop-browser";
 
 const props = withDefaults(defineProps<{
@@ -67,7 +68,7 @@ const props = withDefaults(defineProps<{
 const FilesPanel = defineAsyncComponent(async () => (await import('./FilesPanel.vue')).default);
 const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default);
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default);
-const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('./DesktopBrowserPanel.vue')).default);
+const BrowserPanel = defineAsyncComponent(async () => (await import('./BrowserPanel.vue')).default);
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
@@ -94,7 +95,7 @@ const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal" | "browser">("files");
-const desktopBrowserAvailable = hasDesktopBrowserBridge();
+const desktopBrowserAvailable = hasBrowserProvider();
 const desktopChatWindowAvailable = desktopBridge()?.isDesktop === true
   && typeof desktopBridge()?.openChatWindow === "function";
 const selectedSubagent = ref<OpenSubagentStreamDetail | null>(null);
@@ -2752,7 +2753,7 @@ async function handleSessionModelCustomSubmit() {
                     v-show="activeToolPanel === 'terminal'"
                     :visible="showToolPanel && activeToolPanel === 'terminal'"
                   />
-                  <DesktopBrowserPanel
+                  <BrowserPanel
                     v-if="desktopBrowserAvailable && activeToolPanel === 'browser'"
                     @attach="handleBrowserAttachment"
                   />

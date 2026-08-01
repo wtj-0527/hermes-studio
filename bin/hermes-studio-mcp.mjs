@@ -620,23 +620,49 @@ async function browserSession(descriptor) {
   return cachedBrowserSession
 }
 
-async function browserRequest(method, params = {}) {
-  const descriptor = browserDescriptor()
-  const session = await browserSession(descriptor)
-  const operationId = randomUUID()
-  const response = await fetch(descriptor.endpoint, {
+async function browserApiRequest(method, params = {}) {
+  const profile = defaultProfile()
+  const token = readToken('', true, profile)
+  if (!token) throw new Error(`Hermes Studio browser authentication is unavailable. ${authHint()}`)
+  const response = await fetch(`${baseUrl()}/api/browser/agent`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${session.token}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      'X-Hermes-Browser-Client': session.clientId,
+      ...(profile ? { 'X-Hermes-Profile': profile } : {}),
     },
-    body: JSON.stringify({ method, params, operation_id: operationId }),
+    body: JSON.stringify({ method, params, operation_id: randomUUID() }),
     signal: AbortSignal.timeout(45_000),
   })
   const payload = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(payload?.error || `Browser Broker HTTP ${response.status}`)
+  if (!response.ok) throw new Error(payload?.error || `Hermes Studio Browser HTTP ${response.status}`)
   return payload
+}
+
+async function browserRequest(method, params = {}) {
+  try {
+    const descriptor = browserDescriptor()
+    const session = await browserSession(descriptor)
+    const operationId = randomUUID()
+    const response = await fetch(descriptor.endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.token}`,
+        'Content-Type': 'application/json',
+        'X-Hermes-Browser-Client': session.clientId,
+      },
+      body: JSON.stringify({ method, params, operation_id: operationId }),
+      signal: AbortSignal.timeout(45_000),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(payload?.error || `Browser Broker HTTP ${response.status}`)
+    return payload
+  } catch (error) {
+    if (!/Desktop Browser (?:is not running|is no longer running)|descriptor is invalid/i.test(String(error?.message || error))) throw error
+    const profile = defaultProfile()
+    if (!readToken('', true, profile)) throw error
+    return await browserApiRequest(method, params)
+  }
 }
 
 function browserScreenshotContent(envelope) {
@@ -856,7 +882,7 @@ const tools = [
   {
     name: 'hermes_studio_browser_tabs',
     toolset: 'browser',
-    description: 'List, create, activate, close, or release control of Hermes Studio Desktop browser tabs. Reuse explicit tab_id values across calls.',
+    description: 'List, create, activate, close, or release control of Hermes Studio browser tabs. Desktop uses ElectronBrowserProvider; Web uses SteelBrowserProvider. Reuse explicit tab_id values across calls.',
     inputSchema: browserInputSchema({
       action: { type: 'string', enum: ['list', 'create', 'activate', 'close', 'release'] },
       tab_id: { type: 'string', description: 'Required for activate, close, and release.' },
@@ -867,7 +893,7 @@ const tools = [
   {
     name: 'hermes_studio_browser_navigate',
     toolset: 'browser',
-    description: 'Open an HTTP/HTTPS URL or move back, forward, reload, or stop one Hermes Studio Desktop browser tab.',
+    description: 'Open an HTTP/HTTPS URL or move back, forward, reload, or stop one Hermes Studio browser tab.',
     inputSchema: browserInputSchema({
       tab_id: { type: 'string' },
       action: { type: 'string', enum: ['open', 'back', 'forward', 'reload', 'stop'], description: 'Defaults to open when url is provided.' },
@@ -896,7 +922,7 @@ const tools = [
   {
     name: 'hermes_studio_browser_interact',
     toolset: 'browser',
-    description: 'Click, type, press a key, or scroll in one Desktop browser tab. Click/type require a ref and snapshot_id from the latest snapshot.',
+    description: 'Click, type, press a key, or scroll in one Hermes Studio browser tab. Click/type require a ref and snapshot_id from the latest snapshot.',
     inputSchema: browserInputSchema({
       tab_id: { type: 'string' },
       action: { type: 'string', enum: ['click', 'type', 'press', 'scroll'] },
@@ -913,7 +939,7 @@ const tools = [
   {
     name: 'hermes_studio_browser_console',
     toolset: 'browser',
-    description: 'Read or clear the bounded console log for one Desktop browser tab.',
+    description: 'Read or clear the bounded console log for one Hermes Studio browser tab.',
     inputSchema: browserInputSchema({ tab_id: { type: 'string' }, action: { type: 'string', enum: ['read', 'clear'] } }, ['tab_id', 'action']),
   },
   {
@@ -1611,8 +1637,8 @@ const TOOL_ALIASES = new Map([
 const CATEGORY_TOOLSETS = {
   browser: {
     name: 'hermes_studio_browser_toolset',
-    coverage: 'Hermes Studio Desktop browser tabs and leases; HTTP/HTTPS navigation; accessibility snapshots with stable refs; click, type, key press, and scroll interaction; viewport or full-page screenshots; bounded console log read and clear.',
-    description: 'Discover and invoke Hermes Studio Desktop browser operations without loading every browser tool schema into the model context. Covers tab list/create/activate/close/release, navigation back/forward/reload/stop/open, accessibility snapshots, click/type/key/scroll interaction, screenshots, and console logs. Use action=list for the compact operation catalog, action=describe for one full input schema, then action=call with that exact tool name and arguments.',
+    coverage: 'Hermes Studio browser tabs and leases through ElectronBrowserProvider on Desktop or SteelBrowserProvider on Web; HTTP/HTTPS navigation; accessibility snapshots with stable refs; click, type, key press, and scroll interaction; viewport or full-page screenshots; bounded console log read and clear.',
+    description: 'Discover and invoke Hermes Studio browser operations without loading every browser tool schema into the model context. Desktop uses ElectronBrowserProvider and Web uses SteelBrowserProvider while preserving the same tab and Agent operation semantics. Covers tab list/create/activate/close/release, navigation back/forward/reload/stop/open, accessibility snapshots, click/type/key/scroll interaction, screenshots, and console logs. Use action=list for the compact operation catalog, action=describe for one full input schema, then action=call with that exact tool name and arguments.',
   },
   devices: {
     name: 'hermes_studio_devices_toolset',
@@ -1693,7 +1719,8 @@ function visibleTools() {
     try {
       browserDescriptor()
     } catch {
-      return []
+      const profile = defaultProfile()
+      if (!readToken('', true, profile)) return []
     }
   }
   const categoryToolset = categoryToolsetDefinition(ACTIVE_TOOLSET)

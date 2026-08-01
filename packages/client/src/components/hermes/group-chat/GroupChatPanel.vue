@@ -18,13 +18,13 @@ import type { Attachment } from '@/stores/hermes/chat'
 import type { RoomAgent, RoomInfo } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
-import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
+import { hasBrowserProvider } from '@/browser/provider'
 import { OPEN_DESKTOP_BROWSER_PANEL_EVENT } from '@/utils/desktop-browser'
 
 const FilesPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/FilesPanel.vue')).default)
 const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default)
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default)
-const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/DesktopBrowserPanel.vue')).default)
+const BrowserPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/BrowserPanel.vue')).default)
 
 const { t } = useI18n()
 const router = useRouter()
@@ -69,7 +69,7 @@ const isChatDropActive = ref(false)
 const groupChatContentWrapperRef = ref<HTMLElement | null>(null)
 const showWorkspacePanel = ref(false)
 const activeWorkspacePanel = ref<'files' | 'browser'>('files')
-const desktopBrowserAvailable = hasDesktopBrowserBridge()
+const desktopBrowserAvailable = hasBrowserProvider()
 const workspacePanelMobile = ref(window.innerWidth <= 768)
 const WORKSPACE_PANEL_MIN_WIDTH = 360
 const WORKSPACE_PANEL_DEFAULT_WIDTH = 560
@@ -1010,7 +1010,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 </svg>
                             </button>
                         </div>
-                        <DesktopBrowserPanel
+                        <BrowserPanel
                             class="group-browser-panel"
                             v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
                             @attach="handleBrowserAttachment"

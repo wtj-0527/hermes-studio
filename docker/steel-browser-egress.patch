@@ -1,0 +1,12 @@
+--- a/api/src/utils/proxy.ts
++++ b/api/src/utils/proxy.ts
+@@ -29,8 +29 @@
+-        const internalBypassTests = new Set(["0.0.0.0", process.env.HOST]);
+-
+-        if (env.PROXY_INTERNAL_BYPASS) {
+-          for (const host of env.PROXY_INTERNAL_BYPASS.split(",")) {
+-            internalBypassTests.add(host.trim());
+-          }
+-        }
+-
++        const internalBypassTests = new Set<string>();

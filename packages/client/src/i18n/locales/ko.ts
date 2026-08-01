@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Hermes Studio Desktop에서만 사용할 수 있습니다.', newTab: '새 탭',
+    title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Hermes Studio Desktop에서만 사용할 수 있습니다.', unavailable: '관리형 브라우저 런타임을 현재 사용할 수 없습니다. 채팅과 워크플로는 계속 사용할 수 있습니다.', newTab: '새 탭',
     back: '뒤로', forward: '앞으로', reload: '새로고침', stop: '중지', addressPlaceholder: '검색 또는 주소 입력',
     selectElement: '요소 선택', selectRegion: '영역 선택', annotationPlaceholder: 'Agent가 확인하거나 변경할 내용을 입력하세요…', selectionData: '브라우저 선택 데이터', annotationAdded: '스크린샷을 채팅 입력창에 추가했습니다', annotationCount: '주석 {count}개', annotationLabel: '주석 {index}', clearAnnotations: '주석 지우기', finishAnnotation: '완료',
     agent: 'Agent', agentControlling: '{agent}가 이 탭을 제어 중', agentWaiting: '{agent}가 확인을 기다리는 중', takeOver: '제어권 가져오기', tabCrashed: '이 탭이 비정상 종료되었습니다.', recoverTab: '탭 새로고침', profiles: '프로필', profileName: '프로필 이름', addProfile: '프로필 추가', currentProfile: '활성 프로필', switchProfile: '프로필 전환', editProfile: '프로필 편집',

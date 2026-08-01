@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: '浏览器', settings: '浏览器设置', desktopOnly: '内置浏览器仅在 Hermes Studio 桌面端可用。', newTab: '新标签页',
+    title: '浏览器', settings: '浏览器设置', desktopOnly: '内置浏览器仅在 Hermes Studio 桌面端可用。', unavailable: '托管浏览器运行时当前不可用。聊天和工作流仍可正常使用。', newTab: '新标签页',
     back: '后退', forward: '前进', reload: '刷新', stop: '停止', addressPlaceholder: '搜索或输入网址',
     selectElement: '选择元素', selectRegion: '框选区域', annotationPlaceholder: '描述希望 Agent 检查或修改的内容…', selectionData: '浏览器选区数据', annotationAdded: '截图已添加到对话输入框', annotationCount: '已标注 {count} 处', annotationLabel: '标注 {index}', clearAnnotations: '清除标注', finishAnnotation: '完成',
     agent: 'Agent', agentControlling: '{agent} 正在控制此标签页', agentWaiting: '{agent} 正在等待你的确认', takeOver: '接管', tabCrashed: '此标签页已崩溃。', recoverTab: '重新加载', profiles: '配置档案', profileName: '配置名称', addProfile: '添加配置', currentProfile: '当前使用', switchProfile: '切换使用', editProfile: '编辑配置',

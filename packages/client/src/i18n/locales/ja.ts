@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Hermes Studio Desktop でのみ利用できます。', newTab: '新しいタブ',
+    title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Hermes Studio Desktop でのみ利用できます。', unavailable: '管理対象ブラウザーランタイムは現在利用できません。チャットとワークフローは引き続き利用できます。', newTab: '新しいタブ',
     back: '戻る', forward: '進む', reload: '再読み込み', stop: '停止', addressPlaceholder: '検索またはアドレスを入力',
     selectElement: '要素を選択', selectRegion: '範囲を選択', annotationPlaceholder: 'Agent に確認または変更してほしい内容を入力…', selectionData: 'ブラウザー選択データ', annotationAdded: 'スクリーンショットをチャット入力欄に追加しました', annotationCount: '{count} 件の注釈', annotationLabel: '注釈 {index}', clearAnnotations: '注釈を消去', finishAnnotation: '完了',
     agent: 'Agent', agentControlling: '{agent} がこのタブを操作中', agentWaiting: '{agent} が確認を待っています', takeOver: '引き継ぐ', tabCrashed: 'このタブはクラッシュしました。', recoverTab: '再読み込み', profiles: 'プロファイル', profileName: 'プロファイル名', addProfile: 'プロファイルを追加', currentProfile: '使用中', switchProfile: '切り替える', editProfile: 'プロファイルを編集',

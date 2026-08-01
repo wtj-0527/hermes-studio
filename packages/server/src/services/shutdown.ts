@@ -5,6 +5,7 @@ import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { shutdownManagedGateways } from './hermes/gateway-runner'
 import { stopOutboundRelayClient } from './global-agent/outbound-relay-client'
 import { stopAppRelayClient } from './app-relay/client'
+import { steelBrowserService, steelHttpRuntime } from './browser'
 
 const DEFAULT_SHUTDOWN_FORCE_EXIT_MS = 15_000
 const DEFAULT_DESKTOP_SHUTDOWN_FORCE_EXIT_MS = 15_000
@@ -112,6 +113,10 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
 
       codingAgentRunManager.shutdown()
       logger.info('Coding agent hidden sessions closed')
+
+      await steelBrowserService.shutdown().catch(err => logger.warn(err, 'Failed to stop Steel browser sessions'))
+      await steelHttpRuntime.shutdown().catch(err => logger.warn(err, 'Failed to stop browser egress proxy'))
+      logger.info('Steel browser sessions closed')
 
       // Disconnect Socket.IO before HTTP server to prevent hanging
       if (groupChatServer) {

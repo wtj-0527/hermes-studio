@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: 'المتصفح', settings: 'إعدادات المتصفح', desktopOnly: 'المتصفح المدمج متوفر فقط في Hermes Studio Desktop.', newTab: 'تبويب جديد',
+    title: 'المتصفح', settings: 'إعدادات المتصفح', desktopOnly: 'المتصفح المدمج متوفر فقط في Hermes Studio Desktop.', unavailable: 'وقت تشغيل المتصفح المُدار غير متاح. تظل الدردشة وسير العمل متاحين.', newTab: 'تبويب جديد',
     back: 'رجوع', forward: 'تقدّم', reload: 'إعادة تحميل', stop: 'إيقاف', addressPlaceholder: 'ابحث أو أدخل عنوانًا',
     selectElement: 'تحديد عنصر', selectRegion: 'تحديد منطقة', annotationPlaceholder: 'اوصف ما يجب أن يفحصه الوكيل أو يغيّره…', selectionData: 'بيانات التحديد في المتصفح', annotationAdded: 'تمت إضافة لقطة الشاشة إلى محرّر المحادثة', annotationCount: '{count} تعليق', annotationLabel: 'تعليق {index}', clearAnnotations: 'مسح التعليقات', finishAnnotation: 'تم',
     agent: 'الوكيل', agentControlling: '{agent} يتحكم في هذا التبويب', agentWaiting: '{agent} في انتظار تأكيدك', takeOver: 'استلام التحكم', tabCrashed: 'تعطّل هذا التبويب.', recoverTab: 'إعادة تحميل التبويب', profiles: 'البروفايلات', profileName: 'اسم البروفايل', addProfile: 'إضافة بروفايل', currentProfile: 'البروفايل النشط', switchProfile: 'تبديل البروفايل', editProfile: 'تعديل البروفايل',

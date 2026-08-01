@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: 'Браузер', settings: 'Настройки браузера', desktopOnly: 'Встроенный браузер доступен только в Hermes Studio Desktop.', newTab: 'Новая вкладка',
+    title: 'Браузер', settings: 'Настройки браузера', desktopOnly: 'Встроенный браузер доступен только в Hermes Studio Desktop.', unavailable: 'Управляемая среда браузера недоступна. Чат и рабочие процессы остаются доступными.', newTab: 'Новая вкладка',
     back: 'Назад', forward: 'Вперёд', reload: 'Обновить', stop: 'Остановить', addressPlaceholder: 'Поиск или адрес',
     selectElement: 'Выбрать элемент', selectRegion: 'Выбрать область', annotationPlaceholder: 'Опишите, что Agent должен проверить или изменить…', selectionData: 'Данные выбора браузера', annotationAdded: 'Снимок добавлен в поле чата', annotationCount: 'Аннотаций: {count}', annotationLabel: 'Аннотация {index}', clearAnnotations: 'Очистить аннотации', finishAnnotation: 'Готово',
     agent: 'Agent', agentControlling: '{agent} управляет вкладкой', agentWaiting: '{agent} ожидает вашего подтверждения', takeOver: 'Перехватить', tabCrashed: 'Эта вкладка аварийно завершилась.', recoverTab: 'Перезагрузить', profiles: 'Профили', profileName: 'Имя профиля', addProfile: 'Добавить профиль', currentProfile: 'Активный профиль', switchProfile: 'Сменить профиль', editProfile: 'Изменить профиль',

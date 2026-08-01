@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NInput, NPopover, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { desktopBridge, type DesktopBrowserDownload, type DesktopBrowserSelection, type DesktopBrowserState } from '@/utils/desktop-bridge'
+import { browserProvider, type BrowserDownload, type BrowserSelection, type BrowserState } from '@/browser/provider'
 
 const emit = defineEmits<{
   attach: [payload: { file: File; context: string }]
@@ -11,7 +11,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
-const bridge = desktopBridge()?.browser
+const bridge = browserProvider()
 const EXTERNAL_OVERLAY_SELECTOR = [
   '[data-desktop-browser-overlay]',
   '.n-modal-mask',
@@ -38,9 +38,10 @@ const EXTERNAL_OVERLAY_SELECTOR = [
   '[role="menu"]',
 ].join(',')
 const OVERLAY_RECHECK_DELAYS = [60, 180, 360]
-const state = ref<DesktopBrowserState | null>(null)
+const state = ref<BrowserState | null>(null)
 const address = ref('')
 const viewport = ref<HTMLElement>()
+const webViewUrl = ref('')
 const busy = ref(false)
 const loadError = ref('')
 const externalOverlayOpen = ref(false)
@@ -48,8 +49,8 @@ const annotationNote = ref('')
 const annotations = ref<Array<{
   marker: number
   mode: 'element' | 'region'
-  region: DesktopBrowserSelection['region']
-  element?: DesktopBrowserSelection['element']
+  region: BrowserSelection['region']
+  element?: BrowserSelection['element']
   note: string
 }>>([])
 const annotationCapture = ref<{
@@ -58,15 +59,15 @@ const annotationCapture = ref<{
   tabId: string
   url: string
   title: string
-  viewport: DesktopBrowserSelection['viewport']
+  viewport: BrowserSelection['viewport']
 } | null>(null)
 const annotationTabId = ref<string | null>(null)
 const pendingAnnotation = ref<{
   marker: number
   mode: 'element' | 'region'
-  viewport: DesktopBrowserSelection['viewport']
-  region: DesktopBrowserSelection['region']
-  element?: DesktopBrowserSelection['element']
+  viewport: BrowserSelection['viewport']
+  region: BrowserSelection['region']
+  element?: BrowserSelection['element']
 } | null>(null)
 let resizeObserver: ResizeObserver | null = null
 let modalObserver: MutationObserver | null = null
@@ -108,9 +109,19 @@ const annotationAnchorStyle = computed(() => {
 })
 
 watch(() => activeTab.value?.url, value => { address.value = value || '' }, { immediate: true })
+watch(() => activeTab.value?.id, tabId => {
+  if (webViewUrl.value) bridge.revokeViewUrl?.(webViewUrl.value)
+  webViewUrl.value = ''
+  if (bridge.kind !== 'steel' || !tabId || !bridge.getViewUrl) return
+  void bridge.getViewUrl(tabId).then(url => {
+    if (activeTab.value?.id === tabId) webViewUrl.value = url
+  }).catch(error => {
+    loadError.value = error instanceof Error ? error.message : String(error)
+  })
+}, { immediate: true })
 watch(externalOverlayOpen, () => { void nextTick(syncViewport) })
 
-function applyState(next: DesktopBrowserState): void {
+function applyState(next: BrowserState): void {
   state.value = next
 }
 
@@ -126,6 +137,7 @@ async function run(action: () => Promise<unknown>): Promise<void> {
   busy.value = true
   try {
     await action()
+    applyState(await bridge.getState())
   } catch (error) {
     if (!unmounting) message.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -192,16 +204,16 @@ function formatBytes(input: number): string {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`
 }
 
-function downloadPercent(item: DesktopBrowserDownload): number | null {
+function downloadPercent(item: BrowserDownload): number | null {
   if (item.totalBytes <= 0) return null
   return Math.min(100, Math.max(0, Math.round(item.receivedBytes / item.totalBytes * 100)))
 }
 
-function downloadStateLabel(stateValue: DesktopBrowserDownload['state']): string {
+function downloadStateLabel(stateValue: BrowserDownload['state']): string {
   return t(`browser.downloadState${stateValue[0].toUpperCase()}${stateValue.slice(1)}`)
 }
 
-function downloadSummary(item: DesktopBrowserDownload): string {
+function downloadSummary(item: BrowserDownload): string {
   const percent = downloadPercent(item)
   const transferred = item.totalBytes > 0
     ? `${formatBytes(item.receivedBytes)} / ${formatBytes(item.totalBytes)}`
@@ -408,6 +420,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unmounting = true
+  if (webViewUrl.value) bridge.revokeViewUrl?.(webViewUrl.value)
   if (bridge && annotatingTabId) void bridge.cancelAnnotation(annotatingTabId)
   if (bridge && annotationTabId.value) void bridge.clearAnnotations(annotationTabId.value)
   stopStateListener?.()
@@ -426,6 +439,7 @@ onUnmounted(() => {
 <template>
   <section class="browser-panel">
     <div v-if="!bridge" class="unavailable">{{ t('browser.desktopOnly') }}</div>
+    <div v-else-if="state && !state.available" class="unavailable">{{ t('browser.unavailable') }}</div>
     <template v-else>
       <div class="tab-strip">
         <button v-for="tab in state?.tabs" :key="tab.id" class="tab" :class="{ active: tab.id === state?.activeTabId }" :disabled="hasAnnotationSession" @click="activateTab(tab.id)">
@@ -552,8 +566,15 @@ onUnmounted(() => {
       </div>
 
       <div v-show="!pendingAnnotation" ref="viewport" class="native-viewport">
+        <iframe
+          v-if="bridge.kind === 'steel' && webViewUrl"
+          class="steel-viewport"
+          :src="webViewUrl"
+          sandbox="allow-scripts allow-same-origin"
+          title="Hermes Browser"
+        />
         <span v-if="loadError">{{ loadError }}</span>
-        <span v-else-if="!state">{{ t('common.loading') }}</span>
+        <span v-else-if="!state || (bridge.kind === 'steel' && activeTab && !webViewUrl)">{{ t('common.loading') }}</span>
       </div>
     </template>
   </section>
@@ -586,6 +607,7 @@ onUnmounted(() => {
 .annotation-session-bar { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 10px; color: #2563eb; background: rgba(59,130,246,.1); font-size: 12px; }
 .annotation-session-bar > div { display: flex; gap: 6px; }
 .native-viewport { flex: 1; min-height: 100px; position: relative; display: grid; place-items: center; background: #fff; color: #777; }
+.steel-viewport { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
 .annotation-editor { flex: 1; min-height: 0; overflow: auto; padding: 12px; background: var(--card-color, #fff); }
 .annotation-preview { position: relative; width: 100%; margin-bottom: 168px; line-height: 0; }
 .annotation-preview > img { display: block; width: 100%; height: auto; border: 1px solid var(--border-color); border-radius: 8px; background: #fff; box-sizing: border-box; }
