@@ -13,12 +13,8 @@ export function isAllowedBrowserViewOrigin(request: Pick<IncomingMessage, 'heade
   if (typeof value !== 'string' || !value || value === 'null' || value.includes(',')) return false
   try {
     const origin = new URL(value).origin
-    if (configuredOrigin) return origin === new URL(configuredOrigin).origin
-    const host = String(request.headers.host || '')
-    if (!host) return false
-    const forwarded = String(request.headers['x-forwarded-proto'] || '').split(',')[0]?.trim().toLowerCase()
-    const protocol = forwarded === 'https' || (!forwarded && (request.socket as any)?.encrypted) ? 'https:' : 'http:'
-    return origin === `${protocol}//${host}`
+    if (!configuredOrigin) return false
+    return origin === new URL(configuredOrigin).origin
   } catch {
     return false
   }

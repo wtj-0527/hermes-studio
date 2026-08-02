@@ -103,7 +103,7 @@ export class BrowserEgressProxy {
     server.on('clientError', (_error, socket) => socket.destroy())
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
-      server.listen(0, '0.0.0.0', () => resolve())
+      server.listen(0, '127.0.0.1', () => resolve())
     })
     this.server = server
     return this.proxyUrl(server)
@@ -141,9 +141,11 @@ export class BrowserEgressProxy {
   }
 
   private async resolvePublic(hostname: string): Promise<ResolvedAddress> {
-    if (hostname.toLowerCase() === 'localhost' || hostname.endsWith('.localhost')) throw new Error('Private browser destination is not allowed')
-    const directFamily = isIP(hostname)
-    const addresses = directFamily ? [{ address: hostname, family: directFamily }] : await this.lookupAll(hostname)
+    const unwrapped = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
+    const normalized = unwrapped.toLowerCase()
+    if (normalized === 'localhost' || normalized.endsWith('.localhost')) throw new Error('Private browser destination is not allowed')
+    const directFamily = isIP(normalized)
+    const addresses = directFamily ? [{ address: normalized, family: directFamily }] : await this.lookupAll(normalized)
     if (!addresses.length || addresses.some(item => !isPublicBrowserAddress(item.address))) throw new Error('Private browser destination is not allowed')
     return addresses[0]
   }

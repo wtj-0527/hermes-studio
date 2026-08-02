@@ -1,12 +1,192 @@
+diff --git a/api/src/index.ts b/api/src/index.ts
+index c6ff826..6d5a526 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -5 +4,0 @@ import steelBrowserPlugin from "./steel-browser-plugin.js";
+-import uiPlugin from "./plugins/ui-plugin.js";
+@@ -8 +6,0 @@ import { MB } from "./utils/size.js";
+-import path from "node:path";
+@@ -24,8 +21,0 @@ const setupServer = async () => {
+-  // Register UI plugin only in production (when we have built UI files)
+-  if (process.env.NODE_ENV === "production") {
+-    await server.register(uiPlugin, {
+-      uiDistPath: path.join(process.cwd(), "ui/dist"),
+-      uiPrefix: "/ui",
+-    });
+-  }
+-
+diff --git a/api/src/modules/logs/logs.routes.ts b/api/src/modules/logs/logs.routes.ts
+index 388ea99..90076bf 100644
+--- a/api/src/modules/logs/logs.routes.ts
++++ b/api/src/modules/logs/logs.routes.ts
+@@ -5 +5 @@ import { $ref } from "../../plugins/schemas.js";
+-import { LogQuery } from "../../services/cdp/instrumentation/storage/index.js";
++import type { LogQuery } from "../../services/cdp/instrumentation/storage/log-storage.interface.js";
+diff --git a/api/src/plugins/browser.ts b/api/src/plugins/browser.ts
+index e6ee2a2..7434c88 100644
+--- a/api/src/plugins/browser.ts
++++ b/api/src/plugins/browser.ts
+@@ -5,8 +5,2 @@ import { BrowserLauncherOptions } from "../types/index.js";
+-import {
+-  DuckDBStorage,
+-  InMemoryStorage,
+-  LogStorage,
+-} from "../services/cdp/instrumentation/storage/index.js";
+-import path from "path";
+-import os from "os";
+-import { env } from "../env.js";
++import { InMemoryStorage } from "../services/cdp/instrumentation/storage/in-memory-storage.js";
++import type { LogStorage } from "../services/cdp/instrumentation/storage/log-storage.interface.js";
+@@ -26 +19,0 @@ const browserInstancePlugin: FastifyPluginAsync = async (fastify, _options) => {
+-  const enableStorage = loggingConfig.enableStorage ?? env.LOG_STORAGE_ENABLED ?? false;
+@@ -29,25 +22,3 @@ const browserInstancePlugin: FastifyPluginAsync = async (fastify, _options) => {
+-  let storage: LogStorage | null = null;
+-  if (enableStorage) {
+-    const storagePath =
+-      loggingConfig.storagePath ||
+-      env.LOG_STORAGE_PATH ||
+-      path.join(os.tmpdir(), "steel-browser-logs", "logs.duckdb");
+-
+-    storage = new DuckDBStorage({
+-      dbPath: storagePath,
+-      maxThreads: 1,
+-      memoryLimit: "128MB",
+-      parquetCompression: "none",
+-      enableWriteBuffer: true,
+-      writeBufferSize: 200,
+-      writeBufferFlushInterval: 2000,
+-    });
+-
+-    await storage.initialize();
+-    fastify.log.info(`Log storage initialized at ${storagePath}`);
+-  } else {
+-    // Use in-memory storage for development
+-    storage = new InMemoryStorage(1000);
+-    await storage.initialize();
+-    fastify.log.info("Using in-memory log storage");
+-  }
++  const storage: LogStorage = new InMemoryStorage(1000);
++  await storage.initialize();
++  fastify.log.info("Using bounded in-memory log storage");
+diff --git a/api/src/services/cdp/cdp.service.ts b/api/src/services/cdp/cdp.service.ts
+index 8d6a23e..19fe8e1 100644
+--- a/api/src/services/cdp/cdp.service.ts
++++ b/api/src/services/cdp/cdp.service.ts
+@@ -37,0 +38 @@ import {
++  isLocalNetworkRequest,
+@@ -346,0 +348,4 @@ export class CDPService extends EventEmitter {
++        if (page.isClosed()) {
++          this.logger.debug(`[CDPService] Skipping closed target setup`);
++          return;
++        }
+@@ -350 +355 @@ export class CDPService extends EventEmitter {
+-          installMouseHelper(page, this.launchConfig?.deviceConfig?.device || "desktop");
++          await installMouseHelper(page, this.launchConfig?.deviceConfig?.device || "desktop");
+@@ -397,0 +403,5 @@ export class CDPService extends EventEmitter {
++    if (parsed && isLocalNetworkRequest(parsed)) {
++      this.logger.warn(`[CDPService] Blocked local-network request before proxy bypass: ${url}`);
++      await request.abort("blockedbyclient");
++      return;
++    }
+@@ -890,0 +901,3 @@ export class CDPService extends EventEmitter {
++          this.launchConfig.options.proxyUrl
++            ? "--proxy-bypass-list=<-loopback>"
++            : "",
+@@ -1020 +1033,8 @@ export class CDPService extends EventEmitter {
+-        this.browserInstance.on("targetcreated", this.handleNewTarget.bind(this));
++        this.browserInstance.on("targetcreated", (target) => {
++          void this.handleNewTarget(target).catch((error) => {
++            this.logger.debug(
++              { err: error },
++              `[CDPService] Skipping closed target setup`,
++            );
++          });
++        });
+diff --git a/api/src/utils/proxy.ts b/api/src/utils/proxy.ts
+index 11ad63a..76439e1 100644
 --- a/api/src/utils/proxy.ts
 +++ b/api/src/utils/proxy.ts
-@@ -29,8 +29 @@
+@@ -27 +27 @@ export class ProxyServer extends Server implements IProxyServer {
+-        const { connectionId, hostname } = options;
++        const { connectionId, hostname, isHttp, port, request } = options;
+@@ -29 +29,8 @@ export class ProxyServer extends Server implements IProxyServer {
 -        const internalBypassTests = new Set(["0.0.0.0", process.env.HOST]);
--
++        const recorderOrigin = String(request.headers.origin || "");
++        const isRecorderRequest =
++          isHttp &&
++          hostname === "localhost" &&
++          port === 3000 &&
++          request.method === "POST" &&
++          request.url === "http://localhost:3000/v1/events" &&
++          recorderOrigin === "chrome-extension://ehjennookjcohfepaekpbaacnfpaibhn";
+@@ -31,4 +38,6 @@ export class ProxyServer extends Server implements IProxyServer {
 -        if (env.PROXY_INTERNAL_BYPASS) {
 -          for (const host of env.PROXY_INTERNAL_BYPASS.split(",")) {
 -            internalBypassTests.add(host.trim());
 -          }
--        }
--
++        if (isRecorderRequest) {
++          this.hostConnections.add(connectionId);
++          return {
++            customConnectServer: PassthroughServer,
++            customResponseFunction: makePassthrough(options),
++          };
+@@ -36,0 +46,2 @@ export class ProxyServer extends Server implements IProxyServer {
 +        const internalBypassTests = new Set<string>();
++
+diff --git a/api/src/utils/requests.ts b/api/src/utils/requests.ts
+index 4f8aea7..4ff60db 100644
+--- a/api/src/utils/requests.ts
++++ b/api/src/utils/requests.ts
+@@ -0,0 +1,2 @@
++import { isIP } from "node:net";
++
+@@ -100,0 +103,49 @@ export function compileUrlPatterns(patterns: string[]): RegExp[] {
++export function isLocalNetworkRequest(parsed: URL): boolean {
++  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
++  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
++
++  const family = isIP(hostname);
++  if (family === 4) {
++    const octets = hostname.split(".").map(Number);
++    const [a, b] = octets;
++    return (
++      a === 0 ||
++      a === 10 ||
++      a === 127 ||
++      (a === 100 && b >= 64 && b <= 127) ||
++      (a === 169 && b === 254) ||
++      (a === 172 && b >= 16 && b <= 31) ||
++      (a === 192 && b === 168) ||
++      a >= 224
++    );
++  }
++
++  if (family === 6) {
++    const normalized = hostname.toLowerCase();
++    if (normalized === "::" || normalized === "::1") return true;
++    if (normalized.startsWith("::ffff:")) {
++      const mapped = normalized.slice("::ffff:".length);
++      if (isIP(mapped) === 4) return isLocalNetworkRequest(new URL(`http://${mapped}`));
++      const parts = mapped.split(":");
++      if (parts.length === 2 && parts.every((part) => /^[0-9a-f]{1,4}$/.test(part))) {
++        const high = Number.parseInt(parts[0], 16);
++        const low = Number.parseInt(parts[1], 16);
++        const ipv4 = `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
++        return isLocalNetworkRequest(new URL(`http://${ipv4}`));
++      }
++      return true;
++    }
++    const first = Number.parseInt(normalized.split(":", 1)[0] || "0", 16);
++    return (
++      (first & 0xfe00) === 0xfc00 ||
++      (first & 0xffc0) === 0xfe80 ||
++      (first & 0xff00) === 0xff00 ||
++      normalized.startsWith("100:") ||
++      normalized.startsWith("2001:2:") ||
++      normalized.startsWith("2001:db8:")
++    );
++  }
++
++  return false;
++}
++

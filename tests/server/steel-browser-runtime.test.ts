@@ -45,7 +45,16 @@ describe('SteelHttpRuntimeAdapter', () => {
       goto: vi.fn(async () => null), close: vi.fn(async () => undefined), bringToFront: vi.fn(async () => undefined),
       goBack: vi.fn(async () => null), goForward: vi.fn(async () => null), reload: vi.fn(async () => null),
       screenshot: vi.fn(async () => Buffer.from([0])), viewportSize: vi.fn(() => ({ width: 1280, height: 720 })),
-      locator: vi.fn(), keyboard: { press: vi.fn(), type: vi.fn() }, mouse: { wheel: vi.fn() },
+      locator: vi.fn((selector: string) => selector === 'a,button,input,textarea,select,[role],[tabindex]'
+        ? {
+            evaluateAll: vi.fn()
+              .mockResolvedValueOnce([{ ref: '@e1', role: 'button', name: 'First', selector: '[data-hermes-steel-ref="1"]' }])
+              .mockResolvedValueOnce(undefined)
+              .mockResolvedValueOnce([{ ref: '@e1', role: 'button', name: 'Second', selector: '[data-hermes-steel-ref="1"]' }])
+              .mockResolvedValueOnce(undefined),
+          }
+        : { evaluate: vi.fn(async () => 'Example text'), click: vi.fn(), fill: vi.fn() }),
+      keyboard: { press: vi.fn(), type: vi.fn() }, mouse: { wheel: vi.fn() },
       on: vi.fn(), removeAllListeners: vi.fn(),
     }
     const context = {
@@ -82,6 +91,11 @@ describe('SteelHttpRuntimeAdapter', () => {
       },
     })
     expect(session.castWebSocketUrl('page-1')).toBe(`ws://127.0.0.1:${address.port}/v1/sessions/cast?pageId=page-1`)
+    const firstSnapshot = await session.snapshot('page-1') as { snapshotId: string }
+    const secondSnapshot = await session.snapshot('page-1') as { snapshotId: string }
+    await expect(session.readText('page-1', { snapshot_id: firstSnapshot.snapshotId, ref: '@e1' })).rejects.toThrow('stale')
+    await expect(session.readText('page-1', { snapshot_id: secondSnapshot.snapshotId, ref: '@e1' })).resolves.toMatchObject({ snapshotId: secondSnapshot.snapshotId })
+    await expect(session.interact('page-1', { action: 'click', snapshot_id: firstSnapshot.snapshotId, ref: '@e1' })).rejects.toThrow('stale')
     await session.cancelAgentOperation('page-1')
 
     await session.release()

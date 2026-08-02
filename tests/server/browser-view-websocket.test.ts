@@ -6,6 +6,7 @@ describe('Browser live-view WebSocket origin boundary', () => {
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(true)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'null', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: {} } as any)).toBe(false)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://attacker.example', host: 'attacker.example', 'x-forwarded-proto': 'https' } } as any)).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://evil.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'http://studio.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
   })

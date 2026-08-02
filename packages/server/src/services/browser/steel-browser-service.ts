@@ -43,6 +43,7 @@ interface OwnerRuntime {
   owner: BrowserOwner
   ownerKey: string
   session: SteelRuntimeSession
+  managedTabIds: Set<string>
   activeTabId?: string
   visible: boolean
   agentControls: Map<string, {
@@ -52,6 +53,7 @@ interface OwnerRuntime {
   }>
   queues: Map<string, Promise<void>>
   tabGenerations: Map<string, number>
+  takingOver: Set<string>
 }
 
 interface ViewGrant {
@@ -120,6 +122,7 @@ export class SteelBrowserService {
   private readonly grants = new Map<string, ViewGrant>()
   private readonly viewConnections = new Map<string, Set<() => void>>()
   private runtimeOwnerKey: string | null = null
+  private ownerAcquisition: { key: string; promise: Promise<OwnerRuntime> } | null = null
 
   constructor(options: { runtime: SteelRuntimeAdapter; env?: NodeJS.ProcessEnv | Record<string, string | undefined> }) {
     this.runtime = options.runtime
@@ -145,6 +148,7 @@ export class SteelBrowserService {
   async createTab(owner: BrowserOwner, url = 'about:blank', activate = true): Promise<PortableBrowserState['tabs'][number]> {
     const runtime = await this.ensureOwner(owner)
     const page = await runtime.session.createPage(url)
+    runtime.managedTabIds.add(page.id)
     if (activate || !runtime.activeTabId) runtime.activeTabId = page.id
     return this.publicPage(runtime, page)
   }
@@ -153,14 +157,15 @@ export class SteelBrowserService {
     const runtime = this.requireOwner(owner)
     await this.requirePage(runtime, tabId)
     await runtime.session.closePage(tabId)
+    runtime.managedTabIds.delete(tabId)
     runtime.agentControls.delete(tabId)
     this.revokeViewGrants(runtime.ownerKey, tabId)
     this.revokeViewConnections(runtime.ownerKey, tabId)
     runtime.tabGenerations.set(tabId, (runtime.tabGenerations.get(tabId) || 0) + 1)
-    const remaining = await runtime.session.listPages()
-    if (runtime.activeTabId === tabId) runtime.activeTabId = remaining[0]?.id
-    if (!remaining.length) await this.releaseOwner(runtime)
-    return remaining.length ? await this.stateForRuntime(runtime) : this.emptyState(owner.profile, true)
+    const pages = (await runtime.session.listPages()).filter(page => runtime.managedTabIds.has(page.id))
+    if (runtime.activeTabId === tabId) runtime.activeTabId = pages[0]?.id
+    if (!runtime.managedTabIds.size) await this.releaseOwner(runtime)
+    return runtime.managedTabIds.size ? await this.stateForRuntime(runtime) : this.emptyState(owner.profile, true)
   }
 
   async activateTab(owner: BrowserOwner, tabId: string): Promise<PortableBrowserState> {
@@ -192,12 +197,19 @@ export class SteelBrowserService {
   async takeOver(owner: BrowserOwner, tabId: string): Promise<PortableBrowserState> {
     const runtime = this.requireOwner(owner)
     await this.requirePage(runtime, tabId)
+    if (runtime.takingOver.has(tabId)) throw new Error('Browser user takeover is already in progress')
+    runtime.takingOver.add(tabId)
     runtime.tabGenerations.set(tabId, (runtime.tabGenerations.get(tabId) || 0) + 1)
     this.revokeViewGrants(runtime.ownerKey, tabId)
     this.revokeViewConnections(runtime.ownerKey, tabId)
-    await runtime.session.cancelAgentOperation(tabId)
-    runtime.agentControls.set(tabId, { state: 'idle' })
-    return await this.stateForRuntime(runtime)
+    try {
+      await runtime.session.cancelAgentOperation(tabId)
+      await runtime.queues.get(tabId)?.catch(() => undefined)
+      runtime.agentControls.set(tabId, { state: 'idle' })
+      return await this.stateForRuntime(runtime)
+    } finally {
+      runtime.takingOver.delete(tabId)
+    }
   }
 
   async issueView(owner: BrowserOwner, tabId: string): Promise<{ token: string; url: string }> {
@@ -267,6 +279,7 @@ export class SteelBrowserService {
     const runtime = this.requireOwner(owner)
     const tabId = String(params.tab_id || '').trim()
     if (!tabId) return await this.executeAgentRequest(owner, runtime, method, params, '', 0)
+    if (runtime.takingOver.has(tabId)) throw new Error('Browser user takeover is in progress')
     const generation = runtime.tabGenerations.get(tabId) || 0
     return await this.queued(runtime, tabId, () => this.executeAgentRequest(owner, runtime, method, params, tabId, generation))
   }
@@ -320,21 +333,41 @@ export class SteelBrowserService {
     if (this.runtimeOwnerKey && this.runtimeOwnerKey !== key) {
       throw new Error('Steel Browser runtime is already assigned to another authenticated user')
     }
-    const session = await this.runtime.startSession({ ownerKey: key, profile: owner.profile })
-    const runtime: OwnerRuntime = {
-      owner: { userId: owner.userId, profile: owner.profile },
-      ownerKey: key,
-      session,
-      visible: false,
-      agentControls: new Map(),
-      queues: new Map(),
-      tabGenerations: new Map(),
+    if (this.ownerAcquisition) {
+      if (this.ownerAcquisition.key !== key) throw new Error('Steel Browser runtime is already assigned to another authenticated user')
+      return await this.ownerAcquisition.promise
     }
-    const pages = await session.listPages()
-    runtime.activeTabId = pages[0]?.id
-    this.owners.set(key, runtime)
     this.runtimeOwnerKey = key
-    return runtime
+    const promise = (async () => {
+      const session = await this.runtime.startSession({ ownerKey: key, profile: owner.profile })
+      try {
+        const runtime: OwnerRuntime = {
+          owner: { userId: owner.userId, profile: owner.profile },
+          ownerKey: key,
+          session,
+          managedTabIds: new Set(),
+          visible: false,
+          agentControls: new Map(),
+          queues: new Map(),
+          tabGenerations: new Map(),
+          takingOver: new Set(),
+        }
+        this.owners.set(key, runtime)
+        return runtime
+      } catch (error) {
+        await session.release().catch(() => undefined)
+        throw error
+      }
+    })()
+    this.ownerAcquisition = { key, promise }
+    try {
+      return await promise
+    } catch (error) {
+      if (this.runtimeOwnerKey === key) this.runtimeOwnerKey = null
+      throw error
+    } finally {
+      if (this.ownerAcquisition?.promise === promise) this.ownerAcquisition = null
+    }
   }
 
   private requireOwner(owner: BrowserOwner): OwnerRuntime {
@@ -344,6 +377,7 @@ export class SteelBrowserService {
   }
 
   private async requirePage(runtime: OwnerRuntime, pageId: string): Promise<SteelPageState> {
+    if (!runtime.managedTabIds.has(pageId)) throw new Error('Browser tab not found')
     const page = (await runtime.session.listPages()).find(item => item.id === pageId)
     if (!page) throw new Error('Browser tab not found')
     return page
@@ -402,7 +436,10 @@ export class SteelBrowserService {
   }
 
   private async stateForRuntime(runtime: OwnerRuntime): Promise<PortableBrowserState> {
-    const pages = await runtime.session.listPages()
+    const pages = (await runtime.session.listPages()).filter(page => runtime.managedTabIds.has(page.id))
+    for (const tabId of [...runtime.managedTabIds]) {
+      if (!pages.some(page => page.id === tabId)) runtime.managedTabIds.delete(tabId)
+    }
     if (runtime.activeTabId && !pages.some(page => page.id === runtime.activeTabId)) runtime.activeTabId = pages[0]?.id
     const now = new Date().toISOString()
     return {

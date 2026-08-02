@@ -47,7 +47,7 @@ class SteelHttpRuntimeSession implements SteelRuntimeSession {
   private readonly browser: Browser
   private readonly context: BrowserContext
   private readonly fetchImpl: typeof fetch
-  private readonly refs = new Map<string, Map<string, SnapshotRef>>()
+  private readonly refs = new Map<string, { snapshotId: string; items: Map<string, SnapshotRef> }>()
   private readonly pageIds = new WeakMap<Page, string>()
   private readonly pagesById = new Map<string, Page>()
   private released = false
@@ -126,7 +126,7 @@ class SteelHttpRuntimeSession implements SteelRuntimeSession {
     await page.locator('a,button,input,textarea,select,[role],[tabindex]').evaluateAll((elements: Element[]) => {
       elements.slice(0, 500).forEach((element, index) => element.setAttribute('data-hermes-steel-ref', String(index + 1)))
     })
-    this.refs.set(pageId, new Map(nodes.map(node => [node.ref, { selector: node.selector, role: node.role, name: node.name }])))
+    this.refs.set(pageId, { snapshotId, items: new Map(nodes.map(node => [node.ref, { selector: node.selector, role: node.role, name: node.name }])) })
     const text = nodes.map(node => `${node.ref} ${node.role} name=${JSON.stringify(node.name)}`).join('\n')
     return { tabId: pageId, snapshotId, url: page.url(), title: await page.title(), nodes: nodes.map(({ selector: _selector, ...node }) => node), text }
   }
@@ -134,14 +134,17 @@ class SteelHttpRuntimeSession implements SteelRuntimeSession {
   async readText(pageId: string, input: Record<string, unknown>): Promise<unknown> {
     const page = this.requirePage(pageId)
     const ref = String(input.ref || '')
-    const item = this.refs.get(pageId)?.get(ref)
+    const snapshotId = String(input.snapshotId || input.snapshot_id || '')
+    const snapshot = this.refs.get(pageId)
+    if (!snapshotId || snapshot?.snapshotId !== snapshotId) throw new Error('Browser snapshot reference is stale or invalid')
+    const item = snapshot.items.get(ref)
     if (!item) throw new Error('Browser snapshot reference is stale or invalid')
     const mode = input.mode === 'textContent' ? 'textContent' : 'innerText'
     const source = await page.locator(item.selector).evaluate((element: Element, selectedMode: string) => selectedMode === 'textContent' ? element.textContent || '' : (element as HTMLElement).innerText || '', mode)
     const offset = Math.max(0, Number(input.offset) || 0)
     const limit = Math.max(1, Math.min(20_000, Number(input.limit) || 4_000))
     const text = source.slice(offset, offset + limit)
-    return { tabId: pageId, snapshotId: String(input.snapshotId || input.snapshot_id || ''), ref, mode, offset, limit, text, totalLength: source.length, returnedLength: text.length, hasMore: offset + text.length < source.length, ...(offset + text.length < source.length ? { nextOffset: offset + text.length } : {}) }
+    return { tabId: pageId, snapshotId, ref, mode, offset, limit, text, totalLength: source.length, returnedLength: text.length, hasMore: offset + text.length < source.length, ...(offset + text.length < source.length ? { nextOffset: offset + text.length } : {}) }
   }
 
   async interact(pageId: string, action: Record<string, unknown>): Promise<SteelPageState> {
@@ -149,7 +152,10 @@ class SteelHttpRuntimeSession implements SteelRuntimeSession {
     const kind = String(action.action || '')
     if (kind === 'click' || kind === 'type') {
       const ref = String(action.ref || '')
-      const item = this.refs.get(pageId)?.get(ref)
+      const snapshotId = String(action.snapshotId || action.snapshot_id || '')
+      const snapshot = this.refs.get(pageId)
+      if (!snapshotId || snapshot?.snapshotId !== snapshotId) throw new Error('Browser snapshot reference is stale or invalid')
+      const item = snapshot.items.get(ref)
       if (!item) throw new Error('Browser snapshot reference is stale or invalid')
       const locator = page.locator(item.selector)
       if (kind === 'click') await locator.click({ timeout: 10_000 })

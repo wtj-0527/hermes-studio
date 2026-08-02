@@ -94,11 +94,13 @@ describe('SteelBrowserService ownership boundary', () => {
     await vi.waitFor(() => expect(runtime.session.snapshot).toHaveBeenCalledOnce())
     const queued = service.agentRequest(owner, 'screenshot', { tab_id: tab.id })
 
-    await service.takeOver(owner, tab.id)
+    const takeover = service.takeOver(owner, tab.id)
+    await vi.waitFor(() => expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id))
     finishSnapshot()
 
     await expect(first).rejects.toThrow('cancelled by user takeover')
     await expect(queued).rejects.toThrow('cancelled by user takeover')
+    await expect(takeover).resolves.toBeDefined()
     expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id)
   })
 
@@ -108,6 +110,49 @@ describe('SteelBrowserService ownership boundary', () => {
 
     await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).rejects.toThrow('already assigned')
     expect(service.resolveAgentOwner('shared')).toEqual({ userId: 7, profile: 'shared' })
+  })
+
+  it('atomically reserves the single runtime while the first owner session is starting', async () => {
+    const runtime = fakeRuntime()
+    let finishStart!: () => void
+    runtime.startSession = vi.fn(async () => {
+      await new Promise<void>(resolve => { finishStart = resolve })
+      return runtime.session
+    })
+    const service = new SteelBrowserService({ runtime, env: { HERMES_STEEL_BROWSER_URL: 'http://127.0.0.1:3000' } })
+    const first = service.createTab({ userId: 7, profile: 'shared' }, 'https://one.example')
+    await vi.waitFor(() => expect(runtime.startSession).toHaveBeenCalledOnce())
+
+    await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).rejects.toThrow('already assigned')
+    expect(runtime.startSession).toHaveBeenCalledOnce()
+    finishStart()
+    await expect(first).resolves.toBeDefined()
+  })
+
+  it('waits for an in-flight side-effecting Agent operation before takeover returns', async () => {
+    const runtime = fakeRuntime()
+    let finishInteraction!: () => void
+    runtime.session.interact = vi.fn(async pageId => {
+      await new Promise<void>(resolve => { finishInteraction = resolve })
+      return { id: pageId, title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }
+    })
+    runtime.session.cancelAgentOperation = vi.fn(async () => undefined)
+    const service = new SteelBrowserService({ runtime, env: { HERMES_STEEL_BROWSER_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'shared' }
+    const tab = await service.createTab(owner, 'https://one.example')
+    const operation = service.agentRequest(owner, 'interact', { tab_id: tab.id, action: { action: 'click', ref: '@e1' } })
+    await vi.waitFor(() => expect(runtime.session.interact).toHaveBeenCalledOnce())
+
+    let takeoverReturned = false
+    const takeover = service.takeOver(owner, tab.id).then(result => { takeoverReturned = true; return result })
+    await vi.waitFor(() => expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id))
+    await expect(service.agentRequest(owner, 'screenshot', { tab_id: tab.id })).rejects.toThrow('takeover')
+    await Promise.resolve()
+    expect(takeoverReturned).toBe(false)
+
+    finishInteraction()
+    await expect(operation).rejects.toThrow('cancelled by user takeover')
+    await expect(takeover).resolves.toBeDefined()
   })
 
   it('releases the single-runtime owner lock after the final page closes', async () => {
@@ -123,6 +168,31 @@ describe('SteelBrowserService ownership boundary', () => {
 
     await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).resolves.toBeDefined()
     expect(runtime.session.release).toHaveBeenCalledOnce()
+  })
+
+  it('releases the owner when the final Studio-managed tab closes even if Steel keeps a bootstrap page', async () => {
+    const runtime = fakeRuntime()
+    const pages = [
+      { id: 'bootstrap-page', title: '', url: 'about:blank', loading: false, canGoBack: false, canGoForward: false },
+    ]
+    runtime.session.listPages = async () => pages.map(page => ({ ...page }))
+    runtime.session.createPage = async url => {
+      const page = { id: 'managed-page', title: 'Managed', url, loading: false, canGoBack: false, canGoForward: false }
+      pages.push(page)
+      return { ...page }
+    }
+    runtime.session.closePage = async pageId => { pages.splice(pages.findIndex(page => page.id === pageId), 1) }
+    runtime.session.release = vi.fn(async () => undefined)
+    const service = new SteelBrowserService({ runtime, env: { HERMES_STEEL_BROWSER_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'shared' }
+
+    const tab = await service.createTab(owner, 'https://one.example')
+    expect((await service.state(owner)).tabs.map(item => item.id)).toEqual(['managed-page'])
+    const closed = await service.closeTab(owner, tab.id)
+
+    expect(closed.tabs).toEqual([])
+    expect(runtime.session.release).toHaveBeenCalledOnce()
+    await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).resolves.toBeDefined()
   })
 
   it('returns the unique owner for Agent operations so UI and Agent share the same page', async () => {

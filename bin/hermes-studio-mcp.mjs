@@ -575,7 +575,7 @@ let cachedBrowserSession = null
 function browserInputSchema(properties = {}, required = []) {
   return {
     type: 'object',
-    properties,
+    properties: { ...authArgumentProperties, ...properties },
     ...(required.length ? { required } : {}),
     additionalProperties: false,
   }
@@ -620,9 +620,15 @@ async function browserSession(descriptor) {
   return cachedBrowserSession
 }
 
-async function browserApiRequest(method, params = {}) {
-  const profile = defaultProfile()
-  const token = readToken('', true, profile)
+function browserAuthToken(tokenOverride, profile) {
+  const explicit = String(tokenOverride || '').trim()
+  if (explicit) return explicit
+  return readProfileToken(profile)
+}
+
+async function browserApiRequest(method, params = {}, auth = {}) {
+  const profile = String(auth.profile || defaultProfile() || '').trim()
+  const token = browserAuthToken(auth.token, profile)
   if (!token) throw new Error(`Hermes Studio browser authentication is unavailable. ${authHint()}`)
   const response = await fetch(`${baseUrl()}/api/browser/agent`, {
     method: 'POST',
@@ -639,7 +645,7 @@ async function browserApiRequest(method, params = {}) {
   return payload
 }
 
-async function browserRequest(method, params = {}) {
+async function browserRequest(method, params = {}, auth = {}) {
   try {
     const descriptor = browserDescriptor()
     const session = await browserSession(descriptor)
@@ -659,9 +665,9 @@ async function browserRequest(method, params = {}) {
     return payload
   } catch (error) {
     if (!/Desktop Browser (?:is not running|is no longer running)|descriptor is invalid/i.test(String(error?.message || error))) throw error
-    const profile = defaultProfile()
-    if (!readToken('', true, profile)) throw error
-    return await browserApiRequest(method, params)
+    const profile = String(auth.profile || defaultProfile() || '').trim()
+    if (!browserAuthToken(auth.token, profile)) throw error
+    return await browserApiRequest(method, params, auth)
   }
 }
 
@@ -1775,23 +1781,23 @@ async function callTool(name, args = {}) {
   if (resolvedName === categoryToolset?.name) return await callCategoryToolset(args)
   switch (resolvedName) {
     case 'hermes_studio_browser_tabs': {
-      if (args.action === 'list') return jsonText(await browserRequest('tabs.list'))
-      if (args.action === 'create') return jsonText(await browserRequest('tabs.create', { url: args.url, activate: args.activate }))
-      if (args.action === 'activate') return jsonText(await browserRequest('tabs.activate', { tab_id: args.tab_id }))
-      if (args.action === 'close') return jsonText(await browserRequest('tabs.close', { tab_id: args.tab_id }))
-      if (args.action === 'release') return jsonText(await browserRequest('lease.release', { tab_id: args.tab_id }))
+      if (args.action === 'list') return jsonText(await browserRequest('tabs.list', {}, args))
+      if (args.action === 'create') return jsonText(await browserRequest('tabs.create', { url: args.url, activate: args.activate }, args))
+      if (args.action === 'activate') return jsonText(await browserRequest('tabs.activate', { tab_id: args.tab_id }, args))
+      if (args.action === 'close') return jsonText(await browserRequest('tabs.close', { tab_id: args.tab_id }, args))
+      if (args.action === 'release') return jsonText(await browserRequest('lease.release', { tab_id: args.tab_id }, args))
       return errorText('Invalid browser tab action')
     }
     case 'hermes_studio_browser_navigate': {
       const action = args.action || 'open'
       if (action === 'open') {
         if (!args.url) return errorText('url is required when browser navigation action is open')
-        return jsonText(await browserRequest('navigate', { tab_id: args.tab_id, url: args.url }))
+        return jsonText(await browserRequest('navigate', { tab_id: args.tab_id, url: args.url }, args))
       }
-      return jsonText(await browserRequest('navigation.action', { tab_id: args.tab_id, action }))
+      return jsonText(await browserRequest('navigation.action', { tab_id: args.tab_id, action }, args))
     }
     case 'hermes_studio_browser_snapshot':
-      return jsonText(await browserRequest('snapshot', { tab_id: args.tab_id }))
+      return jsonText(await browserRequest('snapshot', { tab_id: args.tab_id }, args))
     case 'hermes_studio_browser_read_text':
       return jsonText(await browserRequest('text.read', {
         tab_id: args.tab_id,
@@ -1800,19 +1806,19 @@ async function callTool(name, args = {}) {
         mode: args.mode,
         offset: args.offset,
         limit: args.limit,
-      }))
+      }, args))
     case 'hermes_studio_browser_interact': {
       const action = { action: args.action }
       for (const key of ['ref', 'snapshot_id', 'text', 'key', 'direction', 'pixels']) {
         if (args[key] !== undefined) action[key] = args[key]
       }
-      return jsonText(await browserRequest('interact', { tab_id: args.tab_id, action }))
+      return jsonText(await browserRequest('interact', { tab_id: args.tab_id, action }, args))
     }
     case 'hermes_studio_browser_screenshot': {
       try {
-        return browserScreenshotContent(await browserRequest('screenshot', { tab_id: args.tab_id, full_page: args.full_page === true }))
+        return browserScreenshotContent(await browserRequest('screenshot', { tab_id: args.tab_id, full_page: args.full_page === true }, args))
       } catch (error) {
-        const snapshot = await browserRequest('snapshot', { tab_id: args.tab_id }).catch(() => null)
+        const snapshot = await browserRequest('snapshot', { tab_id: args.tab_id }, args).catch(() => null)
         if (!snapshot) throw error
         return jsonText({
           screenshot_error: error instanceof Error ? error.message : String(error),
@@ -1822,7 +1828,7 @@ async function callTool(name, args = {}) {
       }
     }
     case 'hermes_studio_browser_console':
-      return jsonText(await browserRequest(args.action === 'clear' ? 'console.clear' : 'console.read', { tab_id: args.tab_id }))
+      return jsonText(await browserRequest(args.action === 'clear' ? 'console.clear' : 'console.read', { tab_id: args.tab_id }, args))
     case 'hermes_studio_api_openapi_get':
       return jsonText(compactOpenApiDocument(await openApiDocument(withAuthArgs(args)), args))
     case 'hermes_studio_api_request': {
