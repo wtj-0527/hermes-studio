@@ -12,16 +12,12 @@ describe('provider-neutral Browser Runtime configuration', () => {
     }, '/home/agent/.hermes-web-ui')).toBe('/run/secrets/browser-runtime-token')
   })
 
-  it('uses the shared Hermes home when no token path is configured', () => {
-    expect(resolveBrowserRuntimeTokenFile({ HERMES_HOME: '/home/agent/.hermes' }, '/home/agent/.hermes-web-ui')).toBe(
-      '/home/agent/.hermes/runtime/browser-runtime-token',
-    )
+  it('keeps runtime authentication optional when no token path is configured', () => {
+    expect(resolveBrowserRuntimeTokenFile({ HERMES_HOME: '/home/agent/.hermes' }, '/home/agent/.hermes-web-ui')).toBeNull()
   })
 
   it('does not accept vendor-specific runtime configuration aliases', () => {
-    expect(resolveBrowserRuntimeTokenFile({ HERMES_HOME: '/home/agent/.hermes' }, '/app/home')).toBe(
-      '/home/agent/.hermes/runtime/browser-runtime-token',
-    )
+    expect(resolveBrowserRuntimeTokenFile({ HERMES_HOME: '/home/agent/.hermes' }, '/app/home')).toBeNull()
   })
 
   it('reads a private runtime token and rejects group/world-readable files on Unix', async () => {
@@ -34,5 +30,12 @@ describe('provider-neutral Browser Runtime configuration', () => {
       await chmod(tokenFile, 0o644)
       await expect(readBrowserRuntimeToken(tokenFile)).rejects.toThrow('permissions')
     }
+  })
+
+  it('rejects an oversized runtime token file before accepting its contents', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'browser-runtime-token-large-'))
+    const tokenFile = join(directory, 'token')
+    await writeFile(tokenFile, 'x'.repeat(2 * 1024 * 1024), { mode: 0o600 })
+    await expect(readBrowserRuntimeToken(tokenFile)).rejects.toThrow('too large')
   })
 })

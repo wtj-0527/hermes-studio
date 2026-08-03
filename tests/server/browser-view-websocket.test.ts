@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import WebSocket, { WebSocketServer } from 'ws'
-import { isAllowedBrowserViewOrigin, setupBrowserViewWebSocket } from '../../packages/server/src/services/browser/browser-view-websocket'
+import WebSocket from 'ws'
+import { isAllowedBrowserViewOrigin, setupBrowserViewWebSocket, shouldSendBrowserViewFrame } from '../../packages/server/src/services/browser/browser-view-websocket'
 
 const servers: Server[] = []
 
@@ -28,8 +28,11 @@ async function expectUpgradeRejected(url: string, origin?: string): Promise<void
 describe('Browser live-view WebSocket origin boundary', () => {
   it('accepts only the exact same origin and rejects opaque sandbox origins', () => {
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(true)
-    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example' } } as any)).toBe(true)
-    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example:9443', host: 'studio.example:9443' } } as any)).toBe(true)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example' }, socket: { encrypted: true } } as any)).toBe(true)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example:9443', host: 'studio.example:9443' }, socket: { encrypted: true } } as any)).toBe(true)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'http://studio.example', host: 'studio.example' }, socket: { encrypted: false } } as any)).toBe(true)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'http://studio.example', host: 'studio.example' }, socket: { encrypted: true } } as any)).toBe(false)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example' }, socket: { encrypted: false } } as any)).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'other.example' } } as any)).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'null', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: {} } as any)).toBe(false)
@@ -38,25 +41,28 @@ describe('Browser live-view WebSocket origin boundary', () => {
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'http://studio.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
   })
 
-  it('performs a real exact-origin one-time upgrade and revokes an attached view connection', async () => {
-    const upstreamServer = createServer()
-    const upstreamWss = new WebSocketServer({ server: upstreamServer })
-    upstreamWss.on('connection', socket => socket.on('message', data => socket.send(data)))
-    const upstreamPort = await listen(upstreamServer)
+  it('bridges one exact-origin capability to a Studio-owned CDP view and revokes it', async () => {
     let available = true
+    let emitFrame: ((frame: { data: string }) => void) | undefined
+    const dispatch = vi.fn(async () => undefined)
+    const closeRuntimeView = vi.fn(async () => undefined)
     const closeConnection = vi.fn()
+    const openView = vi.fn(async (_pageId: string, onFrame: (frame: { data: string }) => void) => {
+      emitFrame = onFrame
+      return { dispatch, close: closeRuntimeView }
+    })
     const service = {
       consumeViewCapabilityWebSocket: vi.fn((token: string) => {
         if (!available || token !== 'a'.repeat(32)) throw new Error('Browser view not found')
         available = false
-        return { url: `ws://127.0.0.1:${upstreamPort}`, ownerKey: '7:work', pageId: 'page-1' }
+        return { openView, ownerKey: '7:work', pageId: 'page-1' }
       }),
       attachViewConnection: vi.fn((_owner: string, _pageId: string, close: () => void) => {
         closeConnection.mockImplementation(close)
         return () => undefined
       }),
-      allowsViewInput: vi.fn(() => true),
-      allowsViewAccess: vi.fn(() => true),
+      allowsViewCapabilityInput: vi.fn(() => true),
+      allowsViewCapabilityAccess: vi.fn(() => true),
     }
     const studioServer = createServer((_request, response) => { response.statusCode = 404; response.end() })
     setupBrowserViewWebSocket(studioServer, service as any, { configuredOrigin: 'https://studio.example' })
@@ -64,21 +70,57 @@ describe('Browser live-view WebSocket origin boundary', () => {
     const url = `ws://127.0.0.1:${studioPort}/api/browser/view/${'a'.repeat(32)}/socket`
     const client = new WebSocket(url, { origin: 'https://studio.example' })
     await new Promise<void>((resolve, reject) => { client.once('open', resolve); client.once('error', reject) })
-    client.send('ping')
-    await expect(new Promise<string>((resolve, reject) => {
-      client.once('message', data => resolve(data.toString()))
+    await vi.waitFor(() => expect(openView).toHaveBeenCalledWith('page-1', expect.any(Function)))
+
+    emitFrame?.({ data: 'jpeg-frame' })
+    await expect(new Promise<any>((resolve, reject) => {
+      client.once('message', data => resolve(JSON.parse(data.toString())))
       client.once('error', reject)
-    })).resolves.toBe('ping')
+    })).resolves.toEqual({ data: 'jpeg-frame' })
+
+    client.send(JSON.stringify({ type: 'insertText', text: 'hello' }))
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'insertText', text: 'hello' }))
     expect(service.attachViewConnection).toHaveBeenCalledWith('7:work', 'page-1', expect.any(Function))
     closeConnection()
     await new Promise<void>(resolve => client.once('close', () => resolve()))
+    expect(closeRuntimeView).toHaveBeenCalledOnce()
     await expectUpgradeRejected(url, 'https://studio.example')
   })
 
-  it('rejects missing, null, and cross-origin upgrades without consuming the capability', async () => {
-    const consume = vi.fn(() => ({ url: 'ws://127.0.0.1:1', ownerKey: '7:work', pageId: 'page-1' }))
+  it('drops viewer input while Agent control is active', async () => {
+    const dispatch = vi.fn(async () => undefined)
+    const service = {
+      consumeViewCapabilityWebSocket: vi.fn(() => ({
+        ownerKey: '7:work', pageId: 'page-1',
+        openView: async () => ({ dispatch, close: async () => undefined }),
+      })),
+      attachViewConnection: vi.fn(() => () => undefined),
+      allowsViewCapabilityInput: vi.fn(() => false),
+      allowsViewCapabilityAccess: vi.fn(() => true),
+    }
     const studioServer = createServer()
-    setupBrowserViewWebSocket(studioServer, { consumeViewCapabilityWebSocket: consume, allowsViewInput: () => false, allowsViewAccess: () => false } as any, { configuredOrigin: 'https://studio.example' })
+    setupBrowserViewWebSocket(studioServer, service as any, { configuredOrigin: 'https://studio.example' })
+    const studioPort = await listen(studioServer)
+    const client = new WebSocket(`ws://127.0.0.1:${studioPort}/api/browser/view/${'c'.repeat(32)}/socket`, { origin: 'https://studio.example' })
+    await new Promise<void>((resolve, reject) => { client.once('open', resolve); client.once('error', reject) })
+    client.send(JSON.stringify({ type: 'insertText', text: 'blocked' }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(dispatch).not.toHaveBeenCalled()
+    client.close()
+  })
+
+  it('drops live-view frames when the WebSocket is already backpressured', () => {
+    expect(shouldSendBrowserViewFrame(0)).toBe(true)
+    expect(shouldSendBrowserViewFrame(512 * 1024)).toBe(true)
+    expect(shouldSendBrowserViewFrame(0, true)).toBe(false)
+    expect(shouldSendBrowserViewFrame(8 * 1024 * 1024)).toBe(false)
+    expect(shouldSendBrowserViewFrame(512 * 1024 * 1024)).toBe(false)
+  })
+
+  it('rejects missing, null, and cross-origin upgrades without consuming the capability', async () => {
+    const consume = vi.fn(() => ({ ownerKey: '7:work', pageId: 'page-1', openView: async () => ({ dispatch: async () => undefined, close: async () => undefined }) }))
+    const studioServer = createServer()
+    setupBrowserViewWebSocket(studioServer, { consumeViewCapabilityWebSocket: consume, allowsViewCapabilityInput: () => false, allowsViewCapabilityAccess: () => false } as any, { configuredOrigin: 'https://studio.example' })
     const studioPort = await listen(studioServer)
     const url = `ws://127.0.0.1:${studioPort}/api/browser/view/${'b'.repeat(32)}/socket`
     await expectUpgradeRejected(url)

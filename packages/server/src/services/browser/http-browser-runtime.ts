@@ -59,6 +59,8 @@ interface ManagedConsoleEntry {
 
 const CONSOLE_LIMIT = 200
 const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
+const MAX_LIVE_VIEW_FRAME_BASE64_CHARS = 8 * 1024 * 1024
+const MAX_LIVE_VIEW_FRAME_BYTES = 6 * 1024 * 1024
 const MAX_SCREENSHOT_AREA = 50_000_000
 const SCREENSHOT_TIMEOUT_MS = 20_000
 const SENSITIVE_KEY_SUFFIX = /(?:accesstoken|refreshtoken|idtoken|token|apikey|secret|password|authorization|auth|code|session)$/i
@@ -230,7 +232,6 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
   private readonly context: BrowserContext
   private readonly fetchImpl: typeof fetch
   private readonly endpointUrl: string
-  private readonly liveViewUrl: string
   private readonly authorization?: string
   private readonly interactionExecutor: InteractionExecutor
   private readonly activeInteractions = new Map<string, Set<InteractionExecution>>()
@@ -251,7 +252,6 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
     context: BrowserContext
     fetchImpl: typeof fetch
     endpointUrl: string
-    liveViewUrl: string
     authorization?: string
     interactionExecutor: InteractionExecutor
   }) {
@@ -262,7 +262,6 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
     this.context = options.context
     this.fetchImpl = options.fetchImpl
     this.endpointUrl = options.endpointUrl
-    this.liveViewUrl = options.liveViewUrl
     this.authorization = options.authorization
     this.interactionExecutor = options.interactionExecutor
   }
@@ -549,29 +548,106 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
     this.refs.delete(pageId)
   }
 
-  liveViewWebSocketHeaders(): Record<string, string> {
-    return this.authorization ? { Authorization: this.authorization } : {}
-  }
-
-  liveViewWebSocketUrl(pageId: string): string {
-    this.requirePage(pageId)
-    const marker = '%7BpageId%7D'
-    const lowerUrl = this.liveViewUrl.toLowerCase()
-    const lowerMarker = marker.toLowerCase()
-    if (!lowerUrl.includes(lowerMarker) || lowerUrl.indexOf(lowerMarker) !== lowerUrl.lastIndexOf(lowerMarker)) {
-      throw new Error('Browser Runtime live-view URL is not page scoped')
+  async openLiveView(
+    pageId: string,
+    onFrame: (frame: { data: string; metadata?: Record<string, unknown> }) => void,
+  ): Promise<{ dispatch(input: unknown): Promise<void>; close(): Promise<void> }> {
+    const page = this.requirePage(pageId)
+    const session = await this.context.newCDPSession(page)
+    const cdp = session as CDPSession & {
+      on(event: string, listener: (event: any) => void): unknown
+      off?(event: string, listener: (event: any) => void): unknown
     }
-    return this.liveViewUrl.replace(/%7BpageId%7D/i, encodeURIComponent(pageId))
+    let closed = false
+    const frameListener = (event: { data?: string; sessionId?: number; metadata?: Record<string, unknown> }) => {
+      if (closed || typeof event?.data !== 'string' || !event.data) return
+      if (typeof event.sessionId === 'number') {
+        void session.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => undefined)
+      }
+      if (event.data.length > MAX_LIVE_VIEW_FRAME_BASE64_CHARS || Buffer.byteLength(event.data, 'base64') > MAX_LIVE_VIEW_FRAME_BYTES) return
+      try {
+        onFrame({ data: event.data, ...(event.metadata ? { metadata: event.metadata } : {}) })
+      } catch {
+        // The CDP stream must stay acked even if a downstream viewer disappears mid-frame.
+      }
+    }
+    cdp.on('Page.screencastFrame', frameListener)
+    try {
+      await session.send('Page.enable')
+      await session.send('Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1 })
+    } catch (error) {
+      cdp.off?.('Page.screencastFrame', frameListener)
+      await session.detach().catch(() => undefined)
+      throw error
+    }
+    return {
+      dispatch: async input => {
+        if (closed) throw new Error('Browser live view is closed')
+        const message = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, any> : {}
+        const event = message.event && typeof message.event === 'object' && !Array.isArray(message.event) ? message.event as Record<string, any> : {}
+        if (message.type === 'mouseEvent') {
+          const type = String(event.type || '') as 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel'
+          if (!['mousePressed', 'mouseReleased', 'mouseMoved', 'mouseWheel'].includes(type)) throw new Error('Invalid browser mouse event')
+          const button = (['none', 'left', 'middle', 'right', 'back', 'forward'].includes(String(event.button)) ? String(event.button) : 'none') as 'none' | 'left' | 'middle' | 'right' | 'back' | 'forward'
+          const x = Number(event.x)
+          const y = Number(event.y)
+          if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 100_000 || y > 100_000) throw new Error('Invalid browser mouse coordinates')
+          const deltaX = event.deltaX == null ? 0 : Number(event.deltaX)
+          const deltaY = event.deltaY == null ? 0 : Number(event.deltaY)
+          if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || Math.abs(deltaX) > 100_000 || Math.abs(deltaY) > 100_000) throw new Error('Invalid browser mouse delta')
+          await session.send('Input.dispatchMouseEvent', {
+            type,
+            x,
+            y,
+            button,
+            clickCount: Math.max(0, Math.min(3, Number(event.clickCount) || 0)),
+            deltaX,
+            deltaY,
+          })
+          return
+        }
+        if (message.type === 'keyEvent') {
+          const type = String(event.type || '') as 'keyDown' | 'keyUp' | 'rawKeyDown' | 'char'
+          if (!['keyDown', 'keyUp', 'rawKeyDown', 'char'].includes(type)) throw new Error('Invalid browser key event')
+          const text = typeof event.text === 'string' ? event.text : ''
+          if (text.length > 10_000) throw new Error('Browser live-view text is too large')
+          if ((type === 'keyDown' || type === 'char') && text) {
+            await session.send('Input.insertText', { text })
+            return
+          }
+          const key = String(event.key || '')
+          const code = String(event.code || '')
+          const keyCode = Number(event.keyCode || 0)
+          if (key.length > 256 || code.length > 256 || !Number.isFinite(keyCode) || keyCode < 0 || keyCode > 0xffff) throw new Error('Invalid browser key event')
+          await session.send('Input.dispatchKeyEvent', {
+            type,
+            key,
+            code,
+            windowsVirtualKeyCode: keyCode,
+          })
+          return
+        }
+        if (message.type === 'insertText' && typeof message.text === 'string') {
+          if (message.text.length > 10_000) throw new Error('Browser live-view text is too large')
+          await session.send('Input.insertText', { text: message.text })
+          return
+        }
+        throw new Error('Unsupported browser live-view input')
+      },
+      close: async () => {
+        if (closed) return
+        closed = true
+        cdp.off?.('Page.screencastFrame', frameListener)
+        await session.send('Page.stopScreencast').catch(() => undefined)
+        await session.detach().catch(() => undefined)
+      },
+    }
   }
 
   async release(): Promise<void> {
     if (this.released) return
     if (this.releasePromise) return await this.releasePromise
     const release = (async () => {
-      if (!this.browserClosed) {
-        await this.browser.close()
-        this.browserClosed = true
-      }
       const response = await this.fetchImpl(new URL(`/v1/sessions/${encodeURIComponent(this.id)}/release`, this.baseUrl), {
         method: 'POST',
         headers: {
@@ -582,6 +658,10 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
       })
       if (!response.ok) throw new Error(`runtime session release failed with HTTP ${response.status}`)
       this.released = true
+      if (!this.browserClosed) {
+        try { await this.browser.close() } catch { /* exact Runtime release already succeeded */ }
+        this.browserClosed = true
+      }
     })()
     this.releasePromise = release
     try {
@@ -716,23 +796,15 @@ export class HttpBrowserRuntimeAdapter implements BrowserRuntimeAdapter {
       },
       body: JSON.stringify({
         sessionId: requestedId,
-        ownerKey: input.ownerKey,
-        profile: input.profile,
-        ...(egressProxyUrl ? { egressProxyUrl } : {}),
+        ...(egressProxyUrl ? { proxyUrl: egressProxyUrl } : {}),
       }),
       signal: AbortSignal.timeout(45_000),
     })
-    const payload = await response.json().catch(() => null) as { id?: string; cdpUrl?: string; liveViewUrl?: string; message?: string } | null
-    if (!response.ok || !payload?.id || !payload.cdpUrl || !payload.liveViewUrl) throw new Error(payload?.message || `Managed Browser session failed with HTTP ${response.status}`)
+    const payload = await response.json().catch(() => null) as { id?: string; websocketUrl?: string } | null
+    if (!response.ok || !payload?.id || !payload.websocketUrl) throw new Error(`Managed Browser session failed with HTTP ${response.status}`)
     let browser: Browser | null = null
     try {
-      const endpoint = this.privateWebSocketEndpoint(payload.cdpUrl, 'CDP', pinnedBaseUrl)
-      const liveView = this.privateWebSocketEndpoint(payload.liveViewUrl, 'live-view', pinnedBaseUrl)
-      const liveViewText = liveView.toString().toLowerCase()
-      const liveViewMarker = '%7bpageid%7d'
-      if (!liveViewText.includes(liveViewMarker) || liveViewText.indexOf(liveViewMarker) !== liveViewText.lastIndexOf(liveViewMarker)) {
-        throw new Error('Browser Runtime live-view URL must contain exactly one {pageId} placeholder')
-      }
+      const endpoint = this.privateWebSocketEndpoint(payload.websocketUrl, 'CDP', pinnedBaseUrl)
       browser = await this.chromium.connectOverCDP(endpoint.toString(), {
         timeout: 30_000,
         ...(authorization ? { headers: { Authorization: authorization } } : {}),
@@ -747,7 +819,6 @@ export class HttpBrowserRuntimeAdapter implements BrowserRuntimeAdapter {
         context,
         fetchImpl: this.fetchImpl,
         endpointUrl: endpoint.toString(),
-        liveViewUrl: liveView.toString(),
         authorization,
         interactionExecutor: this.interactionExecutor,
       })
@@ -761,7 +832,7 @@ export class HttpBrowserRuntimeAdapter implements BrowserRuntimeAdapter {
         this.pendingRollback = { ownerKey: input.ownerKey, sessionId: payload.id, authorization, startError: error }
         throw new ManagedSessionStartRollbackError(payload.id, new AggregateError([error, releaseError], 'runtime session initialization and rollback both failed'))
       }
-      throw error
+      throw new Error('Managed Browser runtime connection failed', { cause: error })
     }
   }
 

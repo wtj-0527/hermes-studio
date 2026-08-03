@@ -17,6 +17,11 @@ export interface BrowserPageState {
   crashed?: boolean
 }
 
+export interface BrowserRuntimeViewConnection {
+  dispatch(input: unknown): Promise<void>
+  close(): Promise<void>
+}
+
 export interface BrowserRuntimeSession {
   id: string
   listPages(): Promise<BrowserPageState[]>
@@ -32,8 +37,7 @@ export interface BrowserRuntimeSession {
   consoleEntries(pageId: string): Promise<unknown[]>
   clearConsole(pageId: string): Promise<void>
   cancelAgentOperation(pageId: string): Promise<void>
-  liveViewWebSocketUrl(pageId: string): string
-  liveViewWebSocketHeaders?(): Record<string, string>
+  openLiveView?(pageId: string, onFrame: (frame: { data: string; metadata?: Record<string, unknown> }) => void): Promise<BrowserRuntimeViewConnection>
   release(): Promise<void>
 }
 
@@ -45,6 +49,7 @@ interface OwnerRuntime {
   owner: BrowserOwner
   ownerKey: string
   session: BrowserRuntimeSession
+  incarnation: string
   managedTabIds: Set<string>
   activeTabId?: string
   visible: boolean
@@ -62,8 +67,22 @@ interface OwnerRuntime {
 interface ViewGrant {
   token: string
   ownerKey: string
+  profile: string
+  runtimeSessionId: string
+  incarnation: string
   pageId: string
+  generation: number
   expiresAt: number
+}
+
+export interface BrowserViewCapability {
+  ownerKey: string
+  profile: string
+  runtimeSessionId: string
+  incarnation: string
+  pageId: string
+  generation: number
+  openView: NonNullable<BrowserRuntimeSession['openLiveView']>
 }
 
 export interface PortableBrowserState {
@@ -320,7 +339,16 @@ export class ManagedBrowserService {
     const runtime = this.requireOwner(owner)
     await this.requirePage(runtime, tabId)
     const token = randomBytes(32).toString('base64url')
-    this.grants.set(token, { token, ownerKey: runtime.ownerKey, pageId: tabId, expiresAt: Date.now() + 5 * 60_000 })
+    this.grants.set(token, {
+      token,
+      ownerKey: runtime.ownerKey,
+      profile: runtime.owner.profile,
+      runtimeSessionId: runtime.session.id,
+      incarnation: runtime.incarnation,
+      pageId: tabId,
+      generation: runtime.tabGenerations.get(tabId) || 0,
+      expiresAt: Date.now() + 5 * 60_000,
+    })
     return { token, url: `/api/browser/view/${token}` }
   }
 
@@ -354,13 +382,35 @@ export class ManagedBrowserService {
     return { ...grant }
   }
 
-  consumeViewCapabilityWebSocket(token: string): { url: string; headers: Record<string, string>; ownerKey: string; pageId: string } {
+  consumeViewCapabilityWebSocket(token: string): BrowserViewCapability {
     const grant = this.resolveSocketCapability(token)
     this.socketGrants.delete(token)
     const runtime = this.owners.get(grant.ownerKey)
     if (!runtime) throw new Error('Browser view not found')
-    if (!runtime.managedTabIds.has(grant.pageId) || runtime.takingOver.has(grant.pageId)) throw new Error('Browser view not found')
-    return { url: runtime.session.liveViewWebSocketUrl(grant.pageId), headers: runtime.session.liveViewWebSocketHeaders?.() || {}, ownerKey: grant.ownerKey, pageId: grant.pageId }
+    if (!this.matchesViewGrant(runtime, grant) || runtime.takingOver.has(grant.pageId) || !runtime.session.openLiveView) throw new Error('Browser view not found')
+    return {
+      openView: runtime.session.openLiveView.bind(runtime.session),
+      ownerKey: grant.ownerKey,
+      profile: grant.profile,
+      runtimeSessionId: grant.runtimeSessionId,
+      incarnation: grant.incarnation,
+      pageId: grant.pageId,
+      generation: grant.generation,
+    }
+  }
+
+  allowsViewCapabilityAccess(capability: BrowserViewCapability): boolean {
+    const runtime = this.owners.get(capability.ownerKey)
+    return Boolean(runtime
+      && this.ownerAuthorized(runtime.owner)
+      && this.matchesViewGrant(runtime, capability)
+      && !runtime.takingOver.has(capability.pageId))
+  }
+
+  allowsViewCapabilityInput(capability: BrowserViewCapability): boolean {
+    if (!this.allowsViewCapabilityAccess(capability)) return false
+    const runtime = this.owners.get(capability.ownerKey)
+    return Boolean(runtime && (runtime.agentControls.get(capability.pageId)?.state || 'idle') === 'idle')
   }
 
   attachViewConnection(owner: string, pageId: string, close: () => void): () => void {
@@ -416,7 +466,9 @@ export class ManagedBrowserService {
       const tabId = String(params.tab_id || '').trim()
       if (!tabId) return await this.executeAgentRequest(owner, runtime, method, params, '', 0)
       if (runtime.takingOver.has(tabId)) throw new Error('Browser user takeover is in progress')
+      if (!runtime.managedTabIds.has(tabId)) throw new Error('Browser tab not found')
       const generation = runtime.tabGenerations.get(tabId) || 0
+      runtime.agentControls.set(tabId, { state: 'active', label: 'Hermes Agent', action: method })
       return await this.queued(runtime, tabId, () => this.executeAgentRequest(owner, runtime, method, params, tabId, generation))
     }
     const promise = method === 'tabs.create' ? this.queuedOwner(key, execute) : execute()
@@ -430,17 +482,19 @@ export class ManagedBrowserService {
     let result: unknown
     if (method === 'state' || method === 'tabs.list') return await this.stateForRuntime(runtime)
     if (method === 'tabs.create') return await this.createTabUnlocked(owner, String(params.url || 'about:blank'), params.activate !== false)
-    if (method === 'tabs.activate') return await this.activateTab(owner, tabId)
-    if (method === 'tabs.close') return await this.closeTab(owner, tabId)
-    if (method === 'navigate') return await this.navigate(owner, tabId, String(params.url || ''))
-    if (method === 'navigation.action') {
+    if (!runtime.managedTabIds.has(tabId)) throw new Error('Browser tab not found')
+    runtime.agentControls.set(tabId, { state: 'active', label: 'Hermes Agent', action: method })
+    await this.requirePage(runtime, tabId)
+    if ((runtime.tabGenerations.get(tabId) || 0) !== generation) throw new Error('Browser operation was cancelled by user takeover')
+    if (method === 'tabs.activate') result = await this.activateTab(owner, tabId)
+    else if (method === 'tabs.close') return await this.closeTab(owner, tabId)
+    else if (method === 'navigate') result = await this.navigate(owner, tabId, String(params.url || ''))
+    else if (method === 'navigation.action') {
       const action = String(params.action || '')
       if (action !== 'back' && action !== 'forward' && action !== 'reload' && action !== 'stop') throw new Error('Invalid browser navigation action')
-      return await this.navigationAction(owner, tabId, action)
+      result = await this.navigationAction(owner, tabId, action)
     }
-    await this.requirePage(runtime, tabId)
-    runtime.agentControls.set(tabId, { state: 'active', label: 'Hermes Agent', action: method })
-    if (method === 'snapshot') result = await runtime.session.snapshot(tabId)
+    else if (method === 'snapshot') result = await runtime.session.snapshot(tabId)
     else if (method === 'text.read') result = await runtime.session.readText(tabId, params)
     else if (method === 'interact') result = await runtime.session.interact(tabId, (params.action || {}) as Record<string, unknown>)
     else if (method === 'screenshot') result = await runtime.session.screenshot(tabId, params.full_page === true)
@@ -454,6 +508,14 @@ export class ManagedBrowserService {
 
   async shutdown(): Promise<void> {
     let failure: unknown
+    this.grants.clear()
+    this.socketGrants.clear()
+    for (const connections of this.viewConnections.values()) {
+      for (const close of connections) {
+        try { close() } catch { /* best-effort socket revocation */ }
+      }
+    }
+    this.viewConnections.clear()
     for (const item of [...this.owners.values()]) {
       try {
         await item.session.release()
@@ -463,14 +525,6 @@ export class ManagedBrowserService {
         failure ??= error
       }
     }
-    this.grants.clear()
-    this.socketGrants.clear()
-    for (const connections of this.viewConnections.values()) {
-      for (const close of connections) {
-        try { close() } catch { /* best-effort socket revocation */ }
-      }
-    }
-    this.viewConnections.clear()
     if (!failure) this.runtimeOwnerKey = null
     if (failure) throw failure
   }
@@ -524,6 +578,7 @@ export class ManagedBrowserService {
           owner: { userId: owner.userId, profile: owner.profile },
           ownerKey: key,
           session,
+          incarnation: randomUUID(),
           managedTabIds: new Set(),
           visible: false,
           agentControls: new Map(),
@@ -581,6 +636,18 @@ export class ManagedBrowserService {
     }
   }
 
+  private matchesViewGrant(
+    runtime: OwnerRuntime,
+    grant: Pick<ViewGrant, 'ownerKey' | 'profile' | 'runtimeSessionId' | 'incarnation' | 'pageId' | 'generation'>,
+  ): boolean {
+    return runtime.ownerKey === grant.ownerKey
+      && runtime.owner.profile === grant.profile
+      && runtime.session.id === grant.runtimeSessionId
+      && runtime.incarnation === grant.incarnation
+      && runtime.managedTabIds.has(grant.pageId)
+      && (runtime.tabGenerations.get(grant.pageId) || 0) === grant.generation
+  }
+
   private async releaseOwner(runtime: OwnerRuntime): Promise<void> {
     if (this.ownerRelease) {
       if (this.ownerRelease.key !== runtime.ownerKey) throw new Error('Managed Browser runtime is already releasing another owner')
@@ -588,9 +655,6 @@ export class ManagedBrowserService {
     }
     const promise = (async () => {
       runtime.releaseRetryOnly = true
-      await runtime.session.release()
-      this.owners.delete(runtime.ownerKey)
-      if (this.runtimeOwnerKey === runtime.ownerKey) this.runtimeOwnerKey = null
       for (const grants of [this.grants, this.socketGrants]) {
         for (const [token, grant] of grants) {
           if (grant.ownerKey === runtime.ownerKey) grants.delete(token)
@@ -599,6 +663,9 @@ export class ManagedBrowserService {
       for (const key of [...this.viewConnections.keys()]) {
         if (key.startsWith(`${runtime.ownerKey}\0`)) this.revokeViewConnections(runtime.ownerKey, key.slice(runtime.ownerKey.length + 1))
       }
+      await runtime.session.release()
+      this.owners.delete(runtime.ownerKey)
+      if (this.runtimeOwnerKey === runtime.ownerKey) this.runtimeOwnerKey = null
     })()
     this.ownerRelease = { key: runtime.ownerKey, promise }
     try {

@@ -14,7 +14,7 @@ const browserRuntimeTokenFile = resolveBrowserRuntimeTokenFile(process.env, conf
 
 export const httpBrowserRuntime = new HttpBrowserRuntimeAdapter({
   baseUrl: runtimeUrl,
-  apiTokenProvider: async () => await readBrowserRuntimeToken(browserRuntimeTokenFile),
+  ...(browserRuntimeTokenFile ? { apiTokenProvider: async () => await readBrowserRuntimeToken(browserRuntimeTokenFile) } : {}),
   egressProxy: new BrowserEgressProxy({ bindHost: egressBindHost, advertisedHost: egressHost }),
 })
 

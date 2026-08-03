@@ -80,7 +80,7 @@ describe('server security policy', () => {
       id: 'session-1', listPages: async () => [page], createPage: async (url: string) => ({ ...page, url }),
       closePage: async () => undefined, activatePage: async () => undefined, navigate: async (_id: string, url: string) => ({ ...page, url }), navigationAction: async () => page,
       snapshot: async () => ({}), readText: async () => ({}), interact: async () => page, screenshot: async () => ({}), consoleEntries: async () => [], clearConsole: async () => undefined,
-      cancelAgentOperation: async () => undefined, liveViewWebSocketUrl: () => 'ws://127.0.0.1:3000/runtime/live', release: async () => undefined,
+      cancelAgentOperation: async () => undefined, openLiveView: async () => ({ dispatch: async () => undefined, close: async () => undefined }), release: async () => undefined,
     }
     const runtime: BrowserRuntimeAdapter = { startSession: async () => session }
     const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })

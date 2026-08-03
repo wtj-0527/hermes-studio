@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'http'
+import { existsSync } from 'node:fs'
 import { chromium as realChromium } from 'playwright-core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HttpBrowserRuntimeAdapter, isHighRiskBrowserActivation, publicBrowserUrl, redactBrowserText } from '../../packages/server/src/services/browser/http-browser-runtime'
@@ -54,7 +55,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn(async () => cdp), on: vi.fn() }
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'visibility-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'visibility-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({
       baseUrl: 'http://127.0.0.1:3000',
@@ -92,7 +93,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn(async () => cdp), on: vi.fn() }
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'hidden-descendant-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'hidden-descendant-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({
       baseUrl: 'http://127.0.0.1:3000',
@@ -107,7 +108,8 @@ describe('HttpBrowserRuntimeAdapter', () => {
     await session.release()
   })
 
-  it('projects descendant visibility with real Chromium semantics', async () => {
+  const chromiumAvailable = existsSync(realChromium.executablePath())
+  ;(chromiumAvailable ? it : it.skip)('projects descendant visibility with real Chromium semantics', async () => {
     const browser = await realChromium.launch({ headless: true })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
@@ -118,7 +120,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
       const context = page.context()
       const connectedBrowser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
       const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-        ? new Response(JSON.stringify({ id: 'real-visibility-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+        ? new Response(JSON.stringify({ id: 'real-visibility-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
         : new Response('{}', { status: 200 }))
       const adapter = new HttpBrowserRuntimeAdapter({
         baseUrl: 'http://127.0.0.1:3000',
@@ -159,7 +161,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn(async () => cdp), on: vi.fn() }
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'stale-visibility-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'stale-visibility-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({
       baseUrl: 'http://127.0.0.1:3000',
@@ -183,7 +185,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     }
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn() }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'credential-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'credential-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({ baseUrl: 'http://127.0.0.1:3000', chromium: { connectOverCDP: vi.fn(async () => browser) } as any, fetchImpl: fetchImpl as any })
     const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
@@ -208,7 +210,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     }
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn() }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'bare-domain-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'bare-domain-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({ baseUrl: 'http://127.0.0.1:3000', chromium: { connectOverCDP: vi.fn(async () => browser) } as any, fetchImpl: fetchImpl as any })
     const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
@@ -262,7 +264,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn() }
     const interactionExecutor = { execute: vi.fn() }
     const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
-      ? new Response(JSON.stringify({ id: 'security-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      ? new Response(JSON.stringify({ id: 'security-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       : new Response('{}', { status: 200 }))
     const adapter = new HttpBrowserRuntimeAdapter({
       baseUrl: 'http://127.0.0.1:3000',
@@ -318,7 +320,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
     const fetchImpl = vi.fn(async (input: string | URL) => {
       const path = new URL(String(input)).pathname
-      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'race-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'race-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       if (path === '/v1/sessions/race-session/release') return new Response(JSON.stringify({ success: true }), { status: 200 })
       return new Response('{}', { status: 404 })
     })
@@ -353,12 +355,14 @@ describe('HttpBrowserRuntimeAdapter', () => {
       })),
       on: vi.fn(),
     }
-    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
+    const releaseOrder: string[] = []
+    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => { releaseOrder.push('disconnect') }) }
     let releaseAttempts = 0
     const fetchImpl = vi.fn(async (input: string | URL) => {
       const path = new URL(String(input)).pathname
-      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'release-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'release-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       if (path === '/v1/sessions/release-session/release') {
+        releaseOrder.push('release')
         releaseAttempts += 1
         if (releaseAttempts === 1) throw new Error('forced upstream release failure')
         return new Response(JSON.stringify({ success: true }), { status: 200 })
@@ -376,6 +380,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     await expect(session.release()).resolves.toBeUndefined()
     expect(releaseAttempts).toBe(2)
     expect(browser.close).toHaveBeenCalledOnce()
+    expect(releaseOrder).toEqual(['release', 'release', 'disconnect'])
     await adapter.shutdown()
   })
 
@@ -404,7 +409,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
       const path = new URL(String(input)).pathname
       if (path === '/v1/sessions') {
         starts += 1
-        return new Response(JSON.stringify({ id: `session-${starts}`, cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+        return new Response(JSON.stringify({ id: `session-${starts}`, websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       }
       if (path === '/v1/sessions/session-1/release') {
         releases += 1
@@ -441,7 +446,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
       const path = new URL(String(input)).pathname
       if (path === '/v1/sessions') {
         starts += 1
-        return new Response(JSON.stringify({ id: `orphan-${starts}`, cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+        return new Response(JSON.stringify({ id: `orphan-${starts}`, websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       }
       if (path === '/v1/sessions/orphan-1/release') {
         releaseAttempts += 1
@@ -463,7 +468,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     await expect(service.createTab({ userId: 8, profile: 'shared' }, 'about:blank')).rejects.toThrow('already assigned')
     expect(starts).toBe(1)
 
-    await expect(service.createTab(first, 'about:blank')).rejects.toThrow('CDP init failed')
+    await expect(service.createTab(first, 'about:blank')).rejects.toThrow('Managed Browser runtime connection failed')
     expect(releaseAttempts).toBe(2)
     expect(starts).toBe(2)
   })
@@ -493,7 +498,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
       const url = new URL(String(input))
       requests.push(`${init?.method || 'GET'} ${url.pathname}`)
       if (url.pathname === '/v1/sessions') {
-        return new Response(JSON.stringify({ id: 'orphan-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), {
+        return new Response(JSON.stringify({ id: 'orphan-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         })
       }
@@ -548,7 +553,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     }
     const fetchImpl = vi.fn(async (input: string | URL) => {
       const path = new URL(String(input)).pathname
-      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'cancel-session', cdpUrl: 'ws://127.0.0.1:3000/cdp', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+      if (path === '/v1/sessions') return new Response(JSON.stringify({ id: 'cancel-session', websocketUrl: 'ws://127.0.0.1:3000/cdp' }), { status: 200 })
       if (path === '/v1/sessions/cancel-session/release') return new Response('{}', { status: 200 })
       return new Response('{}', { status: 404 })
     })
@@ -635,7 +640,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
       expect(url.hostname).toBe('172.20.0.9')
       expect(new Headers(init?.headers).get('Host')).toBe('browser-runtime:3000')
       return url.pathname === '/v1/sessions'
-        ? new Response(JSON.stringify({ id: 'dns-session', cdpUrl: 'ws://0.0.0.0:3000/cdp?session=dns-session', liveViewUrl: 'ws://127.0.0.1:3000/gateway/live/{pageId}?ticket=view' }), { status: 200 })
+        ? new Response(JSON.stringify({ id: 'dns-session', websocketUrl: 'ws://0.0.0.0:3000/cdp?session=dns-session' }), { status: 200 })
         : new Response('{}', { status: 200 })
     })
     const resolveHost = vi.fn(async (hostname: string) => hostname === 'browser-runtime'
@@ -664,6 +669,188 @@ describe('HttpBrowserRuntimeAdapter', () => {
     await session.release()
   })
 
+  it('streams the tracked page through CDP and dispatches takeover input without an external live-view URL', async () => {
+    const page = {
+      isClosed: vi.fn(() => false), url: vi.fn(() => 'about:blank'), title: vi.fn(async () => 'Blank'), on: vi.fn(),
+    }
+    const trackingSession = {
+      send: vi.fn(async () => ({ targetInfo: { targetId: 'page-1' } })),
+      detach: vi.fn(async () => undefined),
+    }
+    let screencastFrame: ((event: any) => void) | undefined
+    const viewSession = {
+      send: vi.fn(async () => ({})),
+      on: vi.fn((event: string, listener: (payload: any) => void) => {
+        if (event === 'Page.screencastFrame') screencastFrame = listener
+      }),
+      off: vi.fn(),
+      detach: vi.fn(async () => undefined),
+    }
+    const context = {
+      pages: vi.fn(() => [page]),
+      newCDPSession: vi.fn()
+        .mockResolvedValueOnce(trackingSession)
+        .mockResolvedValueOnce(viewSession),
+      on: vi.fn(),
+    }
+    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
+    const fetchImpl = vi.fn(async (input: string | URL) => new URL(String(input)).pathname === '/v1/sessions'
+      ? new Response(JSON.stringify({ id: 'view-session', websocketUrl: 'ws://127.0.0.1:3000/' }), { status: 200 })
+      : new Response('{}', { status: 200 }))
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000',
+      chromium: { connectOverCDP: vi.fn(async () => browser) } as any,
+      fetchImpl: fetchImpl as any,
+    })
+    const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    const frames: any[] = []
+    const view = await session.openLiveView?.('page-1', frame => frames.push(frame))
+
+    expect(view).toBeDefined()
+    expect(viewSession.send).toHaveBeenNthCalledWith(1, 'Page.enable')
+    expect(viewSession.send).toHaveBeenNthCalledWith(2, 'Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1 })
+    screencastFrame?.({ data: 'jpeg-base64', sessionId: 42, metadata: { deviceWidth: 1280, deviceHeight: 720 } })
+    await vi.waitFor(() => expect(viewSession.send).toHaveBeenCalledWith('Page.screencastFrameAck', { sessionId: 42 }))
+    expect(frames).toEqual([{ data: 'jpeg-base64', metadata: { deviceWidth: 1280, deviceHeight: 720 } }])
+
+    await view!.dispatch({ type: 'mouseEvent', event: { type: 'mousePressed', x: 12, y: 34, button: 'left', clickCount: 1 } })
+    await view!.dispatch({ type: 'keyEvent', event: { type: 'keyDown', key: 'a', code: 'KeyA', keyCode: 65, text: 'a' } })
+    await view!.dispatch({ type: 'keyEvent', event: { type: 'keyUp', key: 'a', code: 'KeyA', keyCode: 65, text: '' } })
+    expect(viewSession.send).toHaveBeenCalledWith('Input.dispatchMouseEvent', expect.objectContaining({ type: 'mousePressed', x: 12, y: 34, button: 'left' }))
+    expect(viewSession.send).toHaveBeenCalledWith('Input.insertText', { text: 'a' })
+    expect(viewSession.send).toHaveBeenCalledWith('Input.dispatchKeyEvent', expect.objectContaining({ type: 'keyUp', key: 'a', code: 'KeyA' }))
+
+    await view!.close()
+    expect(viewSession.send).toHaveBeenCalledWith('Page.stopScreencast')
+    expect(viewSession.off).toHaveBeenCalledWith('Page.screencastFrame', screencastFrame)
+    expect(viewSession.detach).toHaveBeenCalledOnce()
+    await session.release()
+  })
+
+  it('acks a valid screencast frame even when the downstream frame sink throws', async () => {
+    const page = { isClosed: vi.fn(() => false), url: vi.fn(() => 'about:blank'), title: vi.fn(async () => 'Blank'), on: vi.fn() }
+    const trackingSession = { send: vi.fn(async () => ({ targetInfo: { targetId: 'page-1' } })), detach: vi.fn(async () => undefined) }
+    let screencastFrame: ((event: any) => void) | undefined
+    const viewSession = {
+      send: vi.fn(async () => ({})),
+      on: vi.fn((event: string, listener: (payload: any) => void) => { if (event === 'Page.screencastFrame') screencastFrame = listener }),
+      off: vi.fn(), detach: vi.fn(async () => undefined),
+    }
+    const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn().mockResolvedValueOnce(trackingSession).mockResolvedValueOnce(viewSession), on: vi.fn() }
+    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000', chromium: { connectOverCDP: vi.fn(async () => browser) } as any,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ id: 'ack-session', websocketUrl: 'ws://127.0.0.1:3000/' }), { status: 200 })) as any,
+    })
+    const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    const view = await session.openLiveView?.('page-1', () => { throw new Error('closed viewer') })
+    expect(() => screencastFrame?.({ data: 'jpeg-base64', sessionId: 77, metadata: { deviceWidth: 800, deviceHeight: 600 } })).not.toThrow()
+    await vi.waitFor(() => expect(viewSession.send).toHaveBeenCalledWith('Page.screencastFrameAck', { sessionId: 77 }))
+    await view?.close()
+    await session.release()
+  })
+
+  it('acks but drops an oversized screencast frame at the Runtime trust boundary', async () => {
+    const page = { isClosed: vi.fn(() => false), url: vi.fn(() => 'about:blank'), title: vi.fn(async () => 'Blank'), on: vi.fn() }
+    const trackingSession = { send: vi.fn(async () => ({ targetInfo: { targetId: 'page-1' } })), detach: vi.fn(async () => undefined) }
+    let screencastFrame: ((event: any) => void) | undefined
+    const viewSession = {
+      send: vi.fn(async () => ({})),
+      on: vi.fn((event: string, listener: (payload: any) => void) => { if (event === 'Page.screencastFrame') screencastFrame = listener }),
+      off: vi.fn(), detach: vi.fn(async () => undefined),
+    }
+    const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn().mockResolvedValueOnce(trackingSession).mockResolvedValueOnce(viewSession), on: vi.fn() }
+    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000', chromium: { connectOverCDP: vi.fn(async () => browser) } as any,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ id: 'oversized-frame-session', websocketUrl: 'ws://127.0.0.1:3000/' }), { status: 200 })) as any,
+    })
+    const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    const frames: unknown[] = []
+    const view = await session.openLiveView?.('page-1', frame => frames.push(frame))
+
+    screencastFrame?.({ data: 'A'.repeat(12 * 1024 * 1024), sessionId: 88 })
+    await vi.waitFor(() => expect(viewSession.send).toHaveBeenCalledWith('Page.screencastFrameAck', { sessionId: 88 }))
+    expect(frames).toEqual([])
+    await view?.close()
+    await session.release()
+  })
+
+  it('rejects malformed or oversized viewer input instead of coercing or truncating it', async () => {
+    const page = { isClosed: vi.fn(() => false), url: vi.fn(() => 'about:blank'), title: vi.fn(async () => 'Blank'), on: vi.fn() }
+    const trackingSession = { send: vi.fn(async () => ({ targetInfo: { targetId: 'page-1' } })), detach: vi.fn(async () => undefined) }
+    const viewSession = { send: vi.fn(async () => ({})), on: vi.fn(), off: vi.fn(), detach: vi.fn(async () => undefined) }
+    const context = { pages: vi.fn(() => [page]), newCDPSession: vi.fn().mockResolvedValueOnce(trackingSession).mockResolvedValueOnce(viewSession), on: vi.fn() }
+    const browser = { contexts: vi.fn(() => [context]), close: vi.fn(async () => undefined) }
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000', chromium: { connectOverCDP: vi.fn(async () => browser) } as any,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ id: 'input-session', websocketUrl: 'ws://127.0.0.1:3000/' }), { status: 200 })) as any,
+    })
+    const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    const view = await session.openLiveView?.('page-1', () => undefined)
+    await expect(view!.dispatch({ type: 'mouseEvent', event: { type: 'mouseMoved', x: Number.NaN, y: 1 } })).rejects.toThrow('coordinates')
+    await expect(view!.dispatch({ type: 'mouseEvent', event: { type: 'mouseWheel', x: 1, y: 1, deltaY: Number.POSITIVE_INFINITY } })).rejects.toThrow('delta')
+    await expect(view!.dispatch({ type: 'insertText', text: 'x'.repeat(10_001) })).rejects.toThrow('too large')
+    await expect(view!.dispatch({ type: 'Runtime.evaluate', expression: '1+1' })).rejects.toThrow('Unsupported')
+    expect(viewSession.send).not.toHaveBeenCalledWith('Input.dispatchMouseEvent', expect.anything())
+    expect(viewSession.send).not.toHaveBeenCalledWith('Input.insertText', expect.anything())
+    await view?.close()
+    await session.release()
+  })
+
+  it('does not expose runtime diagnostics that echo the authenticated egress proxy', async () => {
+    const marker = 'runtime-proxy-password-marker'
+    const egressProxy = { start: vi.fn(async () => `http://runtime-user:${marker}@studio.internal:43123`), close: vi.fn(async () => undefined) }
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000',
+      egressProxy,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ message: `cannot use http://runtime-user:${marker}@studio.internal:43123` }), { status: 400 })) as any,
+    })
+    let error: unknown
+    try {
+      await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toBeInstanceOf(Error)
+    expect(String((error as Error).message)).toBe('Managed Browser session failed with HTTP 400')
+    expect(String((error as Error).message)).not.toContain(marker)
+  })
+
+  it('does not expose a Runtime CDP ticket when the connector fails', async () => {
+    const marker = 'opaque-cdp-ticket-SECRET-MARKER'
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/v1/sessions') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'sensitive-session', websocketUrl: `ws://127.0.0.1:3000/cdp?ticket=${marker}` }), { status: 200 })
+      }
+      if (url.endsWith('/v1/sessions/sensitive-session/release') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ success: true }), { status: 200 })
+      }
+      return new Response('not found', { status: 404 })
+    })
+    const adapter = new HttpBrowserRuntimeAdapter({
+      baseUrl: 'http://127.0.0.1:3000',
+      fetchImpl: fetchImpl as any,
+      chromium: {
+        connectOverCDP: vi.fn(async (endpoint: string) => {
+          throw new Error(`connect failed at ${endpoint}`)
+        }),
+      } as any,
+    })
+
+    let error: unknown
+    try {
+      await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(Error)
+    expect(String((error as Error).message)).toBe('Managed Browser runtime connection failed')
+    expect(String((error as Error).message)).not.toContain(marker)
+  })
+
   it('creates and releases one pinned runtime session without exposing upstream URLs', async () => {
     const requests: Array<{ url: string; method: string; authorization: string; body: unknown }> = []
     server = createServer(async (request, response) => {
@@ -676,8 +863,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
         response.end(JSON.stringify({
           id: 'runtime-session-1',
           status: 'live',
-          cdpUrl: `ws://0.0.0.0:${(server!.address() as any).port}/gateway/cdp/runtime-session-1?ticket=cdp`,
-          liveViewUrl: `ws://127.0.0.1:${(server!.address() as any).port}/gateway/live/runtime-session-1/{pageId}?ticket=view`,
+          websocketUrl: `ws://0.0.0.0:${(server!.address() as any).port}/devtools/browser/runtime-session-1?ticket=cdp`,
         }))
         return
       }
@@ -735,7 +921,7 @@ describe('HttpBrowserRuntimeAdapter', () => {
     const session = await adapter.startSession({ ownerKey: '7:work', profile: 'work' })
     expect(session.id).toBe('runtime-session-1')
     expect(chromium.connectOverCDP).toHaveBeenCalledWith(
-      `ws://127.0.0.1:${address.port}/gateway/cdp/runtime-session-1?ticket=cdp`,
+      `ws://127.0.0.1:${address.port}/devtools/browser/runtime-session-1?ticket=cdp`,
       expect.objectContaining({ headers: { Authorization: 'Bearer runtime-service-token-that-is-at-least-32-characters' } }),
     )
     expect(requests[0]).toMatchObject({
@@ -744,13 +930,12 @@ describe('HttpBrowserRuntimeAdapter', () => {
       authorization: 'Bearer runtime-service-token-that-is-at-least-32-characters',
       body: {
         sessionId: expect.any(String),
-        ownerKey: '7:work',
-        profile: 'work',
-        egressProxyUrl: 'http://runtime-user:runtime-token@studio.internal:43123',
+        proxyUrl: 'http://runtime-user:runtime-token@studio.internal:43123',
       },
     })
-    expect(session.liveViewWebSocketUrl('page-1')).toBe(`ws://127.0.0.1:${address.port}/gateway/live/runtime-session-1/page-1?ticket=view`)
-    expect(session.liveViewWebSocketHeaders?.()).toEqual({ Authorization: 'Bearer runtime-service-token-that-is-at-least-32-characters' })
+    expect(requests[0].body).not.toHaveProperty('ownerKey')
+    expect(requests[0].body).not.toHaveProperty('profile')
+    expect(requests[0].body).not.toHaveProperty('egressProxyUrl')
     await expect(session.listPages()).resolves.toEqual([expect.objectContaining({ canGoBack: true, canGoForward: true })])
     const firstSnapshot = await session.snapshot('page-1') as { snapshotId: string }
     const secondSnapshot = await session.snapshot('page-1') as { snapshotId: string }

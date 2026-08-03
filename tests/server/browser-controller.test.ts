@@ -33,7 +33,7 @@ function runtime(): BrowserRuntimeAdapter {
       snapshot: async () => ({}), readText: async () => ({}), interact: async () => page,
       screenshot: async () => ({}), consoleEntries: async () => [], clearConsole: async () => undefined,
       cancelAgentOperation: async () => undefined,
-      liveViewWebSocketUrl: id => `ws://127.0.0.1:3000/runtime/live?pageId=${id}`,
+      openLiveView: async () => ({ dispatch: async () => undefined, close: async () => undefined }),
       release: async () => undefined,
     }),
   }

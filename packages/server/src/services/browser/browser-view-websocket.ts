@@ -1,8 +1,14 @@
 import type { IncomingMessage, Server as HttpServer } from 'http'
-import WebSocket, { WebSocketServer, type RawData } from 'ws'
+import { WebSocketServer, type RawData } from 'ws'
 import type { ManagedBrowserService } from './managed-browser-service'
 
 const VIEW_SOCKET = /^\/api\/browser\/view\/([A-Za-z0-9_-]{20,200})\/socket$/
+const MAX_VIEW_INPUT_BYTES = 64 * 1024
+const MAX_VIEW_BUFFERED_BYTES = 1024 * 1024
+
+export function shouldSendBrowserViewFrame(bufferedAmount: number, sendPending = false): boolean {
+  return !sendPending && Number.isFinite(bufferedAmount) && bufferedAmount >= 0 && bufferedAmount <= MAX_VIEW_BUFFERED_BYTES
+}
 
 export function isBrowserViewSocketPath(pathname: string): boolean {
   return VIEW_SOCKET.test(pathname)
@@ -15,10 +21,23 @@ export function isAllowedBrowserViewOrigin(request: Pick<IncomingMessage, 'heade
     const origin = new URL(value).origin
     if (configuredOrigin) return origin === new URL(configuredOrigin).origin
     const host = request.headers.host
-    return typeof host === 'string' && !host.includes(',') && new URL(value).host.toLowerCase() === host.trim().toLowerCase()
+    if (typeof host !== 'string' || host.includes(',')) return false
+    const encrypted = Boolean((request.socket as { encrypted?: unknown } | undefined)?.encrypted)
+    const requestOrigin = new URL(`${encrypted ? 'https' : 'http'}://${host.trim()}`).origin
+    return origin === requestOrigin
   } catch {
     return false
   }
+}
+
+function decodeViewInput(data: RawData): unknown {
+  const buffer = Buffer.isBuffer(data)
+    ? data
+    : Array.isArray(data)
+      ? Buffer.concat(data)
+      : Buffer.from(data as ArrayBuffer)
+  if (buffer.byteLength > MAX_VIEW_INPUT_BYTES) throw new Error('Browser live-view input is too large')
+  return JSON.parse(buffer.toString('utf8'))
 }
 
 export function setupBrowserViewWebSocket(
@@ -27,7 +46,7 @@ export function setupBrowserViewWebSocket(
   options: { configuredOrigin?: string } = {},
 ): void {
   const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
-  const wss = new WebSocketServer({ noServer: true })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_VIEW_INPUT_BYTES })
 
   for (const httpServer of servers) {
     httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
@@ -38,49 +57,60 @@ export function setupBrowserViewWebSocket(
         socket.destroy()
         return
       }
-      let view: { url: string; headers: Record<string, string>; ownerKey: string; pageId: string }
+      let capability: ReturnType<ManagedBrowserService['consumeViewCapabilityWebSocket']>
       try {
-        view = service.consumeViewCapabilityWebSocket(match[1])
+        capability = service.consumeViewCapabilityWebSocket(match[1])
       } catch {
         socket.destroy()
         return
       }
       wss.handleUpgrade(request, socket, head, client => {
-        const upstream = new WebSocket(view.url, { perMessageDeflate: false, headers: view.headers })
-        const pending: RawData[] = []
-        let detach: () => void = () => undefined
-        client.on('message', data => {
-          if (!service.allowsViewInput(view.ownerKey, view.pageId)) return
-          if (upstream.readyState === WebSocket.OPEN) upstream.send(data)
-          else if (upstream.readyState === WebSocket.CONNECTING && pending.length < 100) pending.push(data)
-        })
-        upstream.on('open', () => {
-          const queued = pending.splice(0)
-          if (service.allowsViewInput(view.ownerKey, view.pageId)) {
-            for (const data of queued) upstream.send(data)
-          }
-        })
-        upstream.on('message', data => {
-          if (service.allowsViewAccess(view.ownerKey, view.pageId) && client.readyState === WebSocket.OPEN) client.send(data)
-        })
+        let runtimeView: Awaited<ReturnType<typeof capability.openView>> | null = null
         let closed = false
+        let frameSendPending = false
+        let inputQueue = Promise.resolve()
+        let detach: () => void = () => undefined
         const close = () => {
           if (closed) return
           closed = true
           detach()
-          if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) client.close()
-          if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close()
+          void runtimeView?.close().catch(() => undefined)
+          if (client.readyState === client.OPEN || client.readyState === client.CONNECTING) client.close()
         }
-        detach = service.attachViewConnection(view.ownerKey, view.pageId, close)
+        detach = service.attachViewConnection(capability.ownerKey, capability.pageId, close)
         const authorizationTimer = setInterval(() => {
-          if (!service.allowsViewAccess(view.ownerKey, view.pageId)) close()
+          if (!service.allowsViewCapabilityAccess(capability)) close()
         }, 1_000)
         authorizationTimer.unref?.()
         const closeWithTimer = () => { clearInterval(authorizationTimer); close() }
+        client.on('message', data => {
+          if (!service.allowsViewCapabilityInput(capability)) return
+          inputQueue = inputQueue
+            .then(async () => {
+              if (closed || !service.allowsViewCapabilityInput(capability) || !runtimeView) return
+              await runtimeView.dispatch(decodeViewInput(data))
+            })
+            .catch(closeWithTimer)
+        })
         client.on('close', closeWithTimer)
         client.on('error', closeWithTimer)
-        upstream.on('close', closeWithTimer)
-        upstream.on('error', closeWithTimer)
+        void capability.openView(capability.pageId, frame => {
+          if (closed || !service.allowsViewCapabilityAccess(capability) || client.readyState !== client.OPEN) return
+          if (!shouldSendBrowserViewFrame(client.bufferedAmount, frameSendPending)) return
+          frameSendPending = true
+          try {
+            client.send(JSON.stringify(frame), error => {
+              frameSendPending = false
+              if (error) closeWithTimer()
+            })
+          } catch {
+            frameSendPending = false
+            closeWithTimer()
+          }
+        }).then(view => {
+          runtimeView = view
+          if (closed) void view.close().catch(() => undefined)
+        }).catch(closeWithTimer)
       })
     })
   }

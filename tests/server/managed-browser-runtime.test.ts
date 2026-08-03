@@ -22,7 +22,7 @@ function fakeRuntime(): BrowserRuntimeAdapter & { session: BrowserRuntimeSession
     consoleEntries: async () => [],
     clearConsole: async () => undefined,
     cancelAgentOperation: async () => undefined,
-    liveViewWebSocketUrl: pageId => `ws://127.0.0.1:3000/runtime/live?pageId=${encodeURIComponent(pageId)}`,
+    openLiveView: async () => ({ dispatch: async () => undefined, close: async () => undefined }),
     release: async () => undefined,
   }
   return { session, startSession: async () => session }
@@ -82,7 +82,7 @@ describe('ManagedBrowserService ownership boundary', () => {
     const socketPath = service.consumeViewBootstrap(consumed.token).socketPath
     const socketToken = socketPath.split('/').at(-2)!
     expect(() => service.consumeViewBootstrap(consumed.token)).toThrow('not found')
-    expect(service.consumeViewCapabilityWebSocket(socketToken)).toMatchObject({ pageId: tab.id, ownerKey: '7:work' })
+    expect(service.consumeViewCapabilityWebSocket(socketToken)).toMatchObject({ pageId: tab.id, ownerKey: '7:work', openView: expect.any(Function) })
     expect(() => service.consumeViewCapabilityWebSocket(socketToken)).toThrow('not found')
 
     const revoked = await service.issueView(owner, tab.id)
@@ -94,6 +94,54 @@ describe('ManagedBrowserService ownership boundary', () => {
     expect(() => service.consumeViewCapabilityWebSocket(revokedSocketToken)).toThrow('not found')
     expect(closeView).toHaveBeenCalledOnce()
     detachView()
+  })
+
+  it('binds an opened live-view capability to the exact runtime incarnation and tab generation', async () => {
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    const view = await service.issueView(owner, tab.id)
+    const socketToken = service.consumeViewBootstrap(view.token).socketPath.split('/').at(-2)!
+    const capability = service.consumeViewCapabilityWebSocket(socketToken)
+
+    expect(capability).toMatchObject({
+      ownerKey: '7:work', profile: 'work', runtimeSessionId: 'runtime-session-1', pageId: tab.id,
+      generation: 0, incarnation: expect.any(String), openView: expect.any(Function),
+    })
+    expect(service.allowsViewCapabilityAccess(capability)).toBe(true)
+    await service.deactivate(owner)
+    await service.createTab(owner, 'https://example.com')
+    expect(service.allowsViewCapabilityAccess(capability)).toBe(false)
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
+  })
+
+  it('revokes an attached live view before releasing the exact runtime session', async () => {
+    const order: string[] = []
+    const runtime = fakeRuntime()
+    runtime.session.release = vi.fn(async () => { order.push('release') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    service.attachViewConnection('7:work', tab.id, () => { order.push('view-close') })
+
+    await service.deactivate(owner)
+
+    expect(order).toEqual(['view-close', 'release'])
+  })
+
+  it('revokes an attached live view before shutdown releases the exact runtime session', async () => {
+    const order: string[] = []
+    const runtime = fakeRuntime()
+    runtime.session.release = vi.fn(async () => { order.push('release') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    service.attachViewConnection('7:work', tab.id, () => { order.push('view-close') })
+
+    await service.shutdown()
+
+    expect(order).toEqual(['view-close', 'release'])
   })
 
   it('does not consume a pending socket capability after its managed tab disappeared', async () => {
@@ -109,6 +157,45 @@ describe('ManagedBrowserService ownership boundary', () => {
     await service.state(owner)
 
     expect(() => service.consumeViewCapabilityWebSocket(socketToken)).toThrow('not found')
+  })
+
+  it('revokes an attached live view before releasing after its upstream page disappeared', async () => {
+    const order: string[] = []
+    const runtime = fakeRuntime()
+    let pages = [{ id: 'page-1', title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
+    runtime.session.listPages = async () => pages.map(page => ({ ...page }))
+    runtime.session.release = vi.fn(async () => { order.push('release') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    service.attachViewConnection('7:work', tab.id, () => { order.push('view-close') })
+
+    pages = []
+    await service.state(owner)
+
+    expect(order).toEqual(['view-close', 'release'])
+  })
+
+  it('keeps viewer capabilities revoked when release fails after its upstream page disappeared', async () => {
+    const runtime = fakeRuntime()
+    let pages = [{ id: 'page-1', title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
+    runtime.session.listPages = async () => pages.map(page => ({ ...page }))
+    runtime.session.release = vi.fn(async () => { throw new Error('forced release failure') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    const view = await service.issueView(owner, tab.id)
+    const socketToken = service.consumeViewBootstrap(view.token).socketPath.split('/').at(-2)!
+    const capability = service.consumeViewCapabilityWebSocket(socketToken)
+    const closeView = vi.fn()
+    service.attachViewConnection('7:work', tab.id, closeView)
+
+    pages = []
+    await expect(service.state(owner)).rejects.toThrow('forced release failure')
+
+    expect(closeView).toHaveBeenCalledOnce()
+    expect(service.allowsViewCapabilityAccess(capability)).toBe(false)
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
   })
 
   it('fences queued and in-flight Agent operations when the user takes over', async () => {
@@ -136,6 +223,42 @@ describe('ManagedBrowserService ownership boundary', () => {
     await expect(takeover).resolves.toBeDefined()
     expect(service.allowsViewInput('7:work', tab.id)).toBe(true)
     expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id)
+  })
+
+  it('blocks live-view input before an Agent navigation reaches its first async Runtime call', async () => {
+    let finishListPages!: () => void
+    let finishNavigate!: () => void
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    const view = await service.issueView(owner, tab.id)
+    const socketToken = service.consumeViewBootstrap(view.token).socketPath.split('/').at(-2)!
+    const capability = service.consumeViewCapabilityWebSocket(socketToken)
+    let listPagesCalls = 0
+    runtime.session.listPages = vi.fn(async () => {
+      listPagesCalls += 1
+      if (listPagesCalls === 1) await new Promise<void>(resolve => { finishListPages = resolve })
+      return [{ id: tab.id, title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
+    })
+    runtime.session.navigate = vi.fn(async (pageId, url) => {
+      await new Promise<void>(resolve => { finishNavigate = resolve })
+      return { id: pageId, title: 'Example', url, loading: false, canGoBack: true, canGoForward: false }
+    })
+
+    const operation = service.agentRequest(owner, 'navigate', { tab_id: tab.id, url: 'https://example.org' })
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
+    await vi.waitFor(() => expect(runtime.session.listPages).toHaveBeenCalledOnce())
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
+    finishListPages()
+    await vi.waitFor(() => expect(runtime.session.navigate).toHaveBeenCalledOnce())
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
+    finishNavigate()
+    await expect(operation).resolves.toMatchObject({ url: 'https://example.org' })
+    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
+
+    await service.takeOver(owner, tab.id)
+    expect(service.allowsViewInput('7:work', tab.id)).toBe(true)
   })
 
   it('treats user navigation as takeover and waits for the in-flight Agent worker', async () => {
