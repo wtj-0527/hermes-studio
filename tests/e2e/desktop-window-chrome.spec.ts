@@ -463,6 +463,27 @@ test('embeds the desktop browser beside workspace and terminal', async ({ page }
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   await mockChatSocket(page)
   await mockHermesApi(page)
+  await page.route('**/api/browser/providers', async route => {
+    expect(route.request().method()).toBe('GET')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        providers: [{
+          id: 'electron-local',
+          kind: 'electron',
+          label: 'Electron',
+          available: true,
+          selected: true,
+          capabilities: {
+            tabs: true, navigation: true, snapshot: true, interaction: true,
+            screenshot: true, console: true, liveView: true, takeover: true,
+            profiles: true, downloads: true, annotations: true, htmlPreview: true,
+          },
+        }],
+      }),
+    })
+  })
   await page.goto('/#/hermes/chat')
 
   await page.locator('.header-tool-toggle').click()
