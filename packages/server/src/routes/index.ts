@@ -12,6 +12,7 @@ import { codingAgentRoutes } from './coding-agents'
 import { appRelayRoutes } from './app-relay'
 import { apiDocsRoutes } from './api-docs'
 import { themeRoutes } from './theme'
+import { browserPublicRoutes, browserRoutes } from './browser'
 import { claudeCodeProxyRoutes } from './claude-code-proxy'
 import { codexProxyRoutes } from './codex-proxy'
 
@@ -69,6 +70,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(ttsRoutes.routes())
   app.use(apiDocsRoutes.routes())
   app.use(petdexPublicRoutes.routes())
+  app.use(browserPublicRoutes.routes())
 
   // --- Auth middleware: all routes below require authentication ---
   authMiddleware.forEach((middleware) => app.use(middleware))
@@ -81,6 +83,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
   app.use(codingAgentRoutes.routes())
   app.use(themeRoutes.routes())
+  app.use(browserRoutes.routes())
   app.use(appRelayRoutes.routes())
   app.use(sessionRoutes.routes())
   app.use(profileRoutes.routes())

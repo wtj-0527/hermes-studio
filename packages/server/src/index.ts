@@ -35,6 +35,8 @@ import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
 import { createCorsOriginResolver, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
 import { createRequestBodyParser } from './middleware/request-body-parser'
+import { setupBrowserViewWebSocket, isBrowserViewSocketPath } from './services/browser/browser-view-websocket'
+import { managedBrowserService } from './services/browser'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -330,6 +332,7 @@ export async function bootstrap() {
 
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
+  setupBrowserViewWebSocket(servers, managedBrowserService)
   getLanPeerSocketManager().setupServer(servers)
   console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
 
@@ -375,6 +378,7 @@ export async function bootstrap() {
       const url = new URL(req.url || '', `http://${req.headers.host}`)
       if (url.pathname !== '/api/hermes/terminal' &&
         url.pathname !== '/api/hermes/kanban/events' &&
+        !isBrowserViewSocketPath(url.pathname) &&
         url.pathname !== getLanPeerSocketPath() &&
         !url.pathname.startsWith('/socket.io/')) {
         socket.destroy()

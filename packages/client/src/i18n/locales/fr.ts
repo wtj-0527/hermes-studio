@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: 'Navigateur', settings: 'Paramètres du navigateur', desktopOnly: 'Le navigateur intégré est disponible uniquement dans Hermes Studio Desktop.', newTab: 'Nouvel onglet',
+    title: 'Navigateur', settings: 'Paramètres du navigateur', desktopOnly: 'Le navigateur intégré est disponible uniquement dans Hermes Studio Desktop.', unavailable: 'Le moteur de navigateur géré est indisponible. Le chat et les workflows restent disponibles.', newTab: 'Nouvel onglet',
     back: 'Précédent', forward: 'Suivant', reload: 'Actualiser', stop: 'Arrêter', addressPlaceholder: 'Rechercher ou saisir une adresse',
     selectElement: 'Sélectionner un élément', selectRegion: 'Sélectionner une zone', annotationPlaceholder: 'Décrivez ce que l’Agent doit examiner ou modifier…', selectionData: 'Données de sélection du navigateur', annotationAdded: 'Capture ajoutée à la zone de discussion', annotationCount: '{count} annotation(s)', annotationLabel: 'Annotation {index}', clearAnnotations: 'Effacer les annotations', finishAnnotation: 'Terminé',
     agent: 'Agent', agentControlling: '{agent} contrôle cet onglet', agentWaiting: '{agent} attend votre confirmation', takeOver: 'Reprendre', tabCrashed: 'Cet onglet a planté.', recoverTab: 'Recharger', profiles: 'Profils', profileName: 'Nom du profil', addProfile: 'Ajouter un profil', currentProfile: 'Profil actif', switchProfile: 'Changer de profil', editProfile: 'Modifier le profil',
@@ -248,6 +248,7 @@ export default {
     updateSuccess: 'Mise a jour terminee. Veuillez actualiser la page sous peu. Si le service ne demarre pas apres un moment, demarrez-le manuellement.',
     updateFailed: 'Echec de la mise a jour',
     logout: 'Deconnexion',
+    logoutFailed: 'La session du navigateur n’a pas pu être fermée en toute sécurité. Vous êtes toujours connecté ; réessayez.',
     nodeVersionWarning: 'Node.js v{version} detecte. Veuillez passer a la version 23 ou ulterieure.',
     changelog: 'Journal des modifications',
     noChangelog: 'Aucun journal disponible',

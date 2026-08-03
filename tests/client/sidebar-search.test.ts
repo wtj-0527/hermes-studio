@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const openSessionSearchMock = vi.hoisted(() => vi.fn())
+const requestMock = vi.hoisted(() => vi.fn())
+const clearThemeBackgroundCacheMock = vi.hoisted(() => vi.fn())
+const messageMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 const mockAppStore = vi.hoisted(() => ({
   sidebarOpen: true,
   sidebarCollapsed: false,
@@ -28,6 +31,24 @@ vi.mock('@/composables/useSessionSearch', () => ({
 
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => mockAppStore,
+}))
+
+vi.mock('@/api/client', () => ({
+  getStoredUserId: () => 7,
+  getStoredUsername: () => 'admin',
+  isStoredSuperAdmin: () => {
+    const token = localStorage.getItem('hermes_api_key') || ''
+    try {
+      return JSON.parse(atob(token.split('.')[1] || '')).role === 'super_admin'
+    } catch {
+      return false
+    }
+  },
+  request: requestMock,
+}))
+
+vi.mock('@/api/theme', () => ({
+  clearThemeBackgroundCache: clearThemeBackgroundCacheMock,
 }))
 
 vi.mock('vue-router', async (importOriginal) => {
@@ -84,10 +105,7 @@ vi.mock('naive-ui', async () => {
   const actual = await vi.importActual<any>('naive-ui')
   return {
     ...actual,
-    useMessage: () => ({
-      success: vi.fn(),
-      error: vi.fn(),
-    }),
+    useMessage: () => messageMock,
     NButton: {
       template: '<button v-bind="$attrs"><slot /></button>',
     },
@@ -121,6 +139,10 @@ describe('AppSidebar navigation', () => {
     mockAppStore.reloadClient.mockClear()
     mockAppStore.doUpdate.mockReset()
     mockAppStore.doUpdate.mockResolvedValue(false)
+    requestMock.mockReset().mockResolvedValue({ ok: true })
+    clearThemeBackgroundCacheMock.mockReset().mockResolvedValue(undefined)
+    messageMock.success.mockReset()
+    messageMock.error.mockReset()
   })
 
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
@@ -233,5 +255,62 @@ describe('AppSidebar navigation', () => {
 
     expect(mockAppStore.doUpdate).toHaveBeenCalledOnce()
     expect(wrapper.text()).not.toContain('sidebar.dockerUpdateGuide')
+  })
+
+  it('keeps the login session intact when browser deactivation fails during logout', async () => {
+    localStorage.setItem('hermes_api_key', 'still-authenticated')
+    requestMock
+      .mockRejectedValueOnce(new Error('runtime session release failed'))
+      .mockResolvedValueOnce({ ok: true })
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    await wrapper.get('.logout-item').trigger('click')
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('/api/auth/logout', { method: 'POST' })
+    expect(localStorage.getItem('hermes_api_key')).toBe('still-authenticated')
+    expect(clearThemeBackgroundCacheMock).not.toHaveBeenCalled()
+    expect(messageMock.error).toHaveBeenCalledWith('sidebar.logoutFailed')
+
+    await wrapper.get('.logout-item').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledTimes(2)
+    expect(clearThemeBackgroundCacheMock).toHaveBeenCalledWith(7)
+    expect(localStorage.getItem('hermes_api_key')).toBeNull()
+  })
+
+  it('does not issue concurrent browser deactivation requests on repeated logout clicks', async () => {
+    localStorage.setItem('hermes_api_key', 'still-authenticated')
+    let finishDeactivate!: () => void
+    requestMock.mockReturnValueOnce(new Promise(resolve => { finishDeactivate = () => resolve({ ok: true }) }))
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+        },
+      },
+    })
+
+    await wrapper.get('.logout-item').trigger('click')
+    await wrapper.get('.logout-item').trigger('click')
+    expect(requestMock).toHaveBeenCalledOnce()
+    expect(wrapper.get('.logout-item').attributes('disabled')).toBeDefined()
+
+    finishDeactivate()
+    await flushPromises()
+    expect(clearThemeBackgroundCacheMock).toHaveBeenCalledWith(7)
+    expect(localStorage.getItem('hermes_api_key')).toBeNull()
   })
 })

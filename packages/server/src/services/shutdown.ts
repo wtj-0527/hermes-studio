@@ -5,6 +5,7 @@ import { codingAgentRunManager } from './agent-runner/coding-agent-run-manager'
 import { shutdownManagedGateways } from './hermes/gateway-runner'
 import { stopOutboundRelayClient } from './global-agent/outbound-relay-client'
 import { stopAppRelayClient } from './app-relay/client'
+import { managedBrowserService, httpBrowserRuntime } from './browser'
 
 const DEFAULT_SHUTDOWN_FORCE_EXIT_MS = 15_000
 const DEFAULT_DESKTOP_SHUTDOWN_FORCE_EXIT_MS = 15_000
@@ -50,6 +51,7 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
     isShuttingDown = true
 
     const stopAgentBridge = Boolean(agentBridgeManager && shouldStopAgentBridgeOnShutdown(signal))
+    let exitCode = 0
 
     // Force exit only if graceful cleanup hangs. The bridge can take up to 10s
     // to stop worker subprocesses, so this cap must be longer than that.
@@ -113,6 +115,13 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
       codingAgentRunManager.shutdown()
       logger.info('Coding agent hidden sessions closed')
 
+      await managedBrowserService.shutdown().catch(err => {
+        exitCode = 1
+        logger.error(err, 'Failed to stop Managed browser sessions')
+      })
+      await httpBrowserRuntime.shutdown().catch(err => logger.warn(err, 'Failed to stop browser egress proxy'))
+      logger.info('Managed browser sessions closed')
+
       // Disconnect Socket.IO before HTTP server to prevent hanging
       if (groupChatServer) {
         groupChatServer.agentClients.disconnectAll()
@@ -132,12 +141,13 @@ export function createShutdownHandler(server: any, groupChatServer?: any, chatRu
         )))
       }
     } catch (err) {
+      exitCode = 1
       logger.error(err, 'Shutdown error')
     }
 
     closeDb()
     clearTimeout(forceExitTimer)
-    process.exit(0)
+    process.exit(exitCode)
   }
 }
 

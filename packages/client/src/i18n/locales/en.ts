@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Hermes Studio Desktop.', newTab: 'New Tab',
+    title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Hermes Studio Desktop.', unavailable: 'The managed browser runtime is unavailable. Chat and Workflows remain available.', newTab: 'New Tab',
     back: 'Back', forward: 'Forward', reload: 'Reload', stop: 'Stop', addressPlaceholder: 'Search or enter an address',
     selectElement: 'Select element', selectRegion: 'Select region', annotationPlaceholder: 'Describe what the Agent should inspect or change…', selectionData: 'Browser selection data', annotationAdded: 'Screenshot added to the chat composer', annotationCount: '{count} annotation(s)', annotationLabel: 'Annotation {index}', clearAnnotations: 'Clear annotations', finishAnnotation: 'Done',
     agent: 'Agent', agentControlling: '{agent} is controlling this tab', agentWaiting: '{agent} is waiting for your confirmation', takeOver: 'Take over', tabCrashed: 'This tab crashed.', recoverTab: 'Reload tab', profiles: 'Profiles', profileName: 'Profile name', addProfile: 'Add profile', currentProfile: 'Active profile', switchProfile: 'Switch profile', editProfile: 'Edit profile',
@@ -246,6 +246,7 @@ export default {
     updateSuccess: 'Update successful. Please refresh the page shortly. If it does not start after a while, start it manually.',
     updateFailed: 'Update failed',
     logout: 'Sign Out',
+    logoutFailed: 'The browser session could not be released safely. You are still signed in; please retry.',
     nodeVersionWarning: 'Detected Node.js v{version}. Please upgrade to version 23 or later.',
     changelog: 'Changelog',
     noChangelog: 'No changelog available',

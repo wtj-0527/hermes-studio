@@ -270,6 +270,64 @@ describe('Desktop Browser Broker', () => {
     }
   })
 
+  it('deduplicates mutating operations by client and operation identity before side effects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-browser-broker-idempotency-'))
+    roots.push(root)
+    const tabs: Array<{ id: string; agentControl: string }> = []
+    let createCount = 0
+    let releaseCreate!: () => void
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const gate = new Promise<void>(resolve => { releaseCreate = resolve })
+    const manager = {
+      state: () => ({ tabs, activeTabId: tabs[0]?.id, maxTabs: 8 }),
+      createTab: async (url: string) => {
+        createCount += 1
+        markStarted()
+        await gate
+        const tab = { id: `tab-${createCount}`, agentControl: 'idle', title: '', url, loading: false, canGoBack: false, canGoForward: false, crashed: false }
+        tabs.push(tab)
+        return tab
+      },
+      setAgentControl: () => {}, revokeAgentControl: () => {}, cancelAgentOperation: () => {},
+    } as unknown as BrowserManager
+    const broker = new BrowserBroker(manager, root)
+    const descriptor = await broker.start()
+
+    try {
+      const registration = await fetch(`${descriptor.endpoint}/session`, {
+        method: 'POST', headers: { Authorization: `Bearer ${descriptor.token}`, 'Content-Type': 'application/json' }, body: '{}',
+      })
+      const client = await registration.json() as { client_id: string; session_token: string }
+      const invoke = (url: string) => fetch(descriptor.endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${client.session_token}`, 'Content-Type': 'application/json', 'X-Hermes-Browser-Client': client.client_id },
+        body: JSON.stringify({ method: 'tabs.create', params: { url }, operation_id: 'create-operation-1' }),
+      })
+
+      const first = invoke('https://example.test/one')
+      await started
+      const duplicate = invoke('https://example.test/one')
+      const conflict = await invoke('https://example.test/two')
+      expect(conflict.status).toBe(409)
+      expect((await conflict.json()).error).toContain('operation_id')
+      releaseCreate()
+      const [firstResponse, duplicateResponse] = await Promise.all([first, duplicate])
+      expect(firstResponse.status).toBe(200)
+      expect(duplicateResponse.status).toBe(200)
+      const firstBody = await firstResponse.json()
+      expect(await duplicateResponse.json()).toEqual(firstBody)
+      const replay = await invoke('https://example.test/one')
+      expect(replay.status).toBe(200)
+      expect(await replay.json()).toEqual(firstBody)
+      expect(createCount).toBe(1)
+      expect(tabs).toHaveLength(1)
+    } finally {
+      releaseCreate()
+      await broker.stop()
+    }
+  })
+
   it('bounds shutdown and cancels an active browser operation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-browser-broker-stop-'))
     roots.push(root)

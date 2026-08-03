@@ -69,12 +69,95 @@ describe('hermes-studio browser MCP toolset', () => {
       },
     })
     expect(unavailable.result.isError).toBe(true)
-    expect(unavailable.result.content[0].text).toContain('Desktop Browser is not running')
+    expect(unavailable.result.content[0].text).toContain('browser authentication is unavailable')
     expect(child.exitCode).toBeNull()
+  })
+
+  it('binds Studio-authoritative profile headers to the matching temporary profile token even when a Desktop Broker exists', async () => {
+    root = await mkdtemp(join(tmpdir(), 'hermes-browser-mcp-web-fallback-'))
+    await mkdir(join(root, 'profiles', 'alpha'), { recursive: true, mode: 0o700 })
+    await writeFile(join(root, 'profiles', 'alpha', '.model-run-token'), 'alpha-profile-token\n', { mode: 0o600 })
+    await writeFile(join(root, '.token'), 'legacy-global-token\n', { mode: 0o600 })
+    const brokerRoot = join(root, 'desktop-browser')
+    await mkdir(brokerRoot, { recursive: true, mode: 0o700 })
+    await writeFile(join(brokerRoot, 'broker.json'), JSON.stringify({
+      schema: 1,
+      desktopPid: process.pid,
+      endpoint: 'http://127.0.0.1:65534/v1',
+      token: 'broker-token-that-must-not-be-used',
+      instanceId: 'desktop-broker-present',
+      createdAt: new Date().toISOString(),
+    }), { mode: 0o600 })
+
+    const requests: Array<{ url: string; authorization: string; profile: string; body: any }> = []
+    server = createServer(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      requests.push({
+        url: String(request.url || ''),
+        authorization: String(request.headers.authorization || ''),
+        profile: String(request.headers['x-hermes-profile'] || ''),
+        body,
+      })
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({ operation_id: body.operation_id, result: { tabs: [] } }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server!.once('error', reject)
+      server!.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('test Web fallback did not bind')
+
+    child = spawn(process.execPath, [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'], {
+      env: {
+        ...process.env,
+        HERMES_WEB_UI_HOME: root,
+        HERMES_WEB_UI_URL: `http://127.0.0.1:${address.port}`,
+        HERMES_WEB_UI_PROFILE: 'default',
+        HERMES_WEB_UI_TOKEN: '',
+        AUTH_TOKEN: '',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const rpc = rpcClient(child)
+    await rpc(1, 'initialize', { protocolVersion: '2024-11-05' })
+
+    const alpha = await rpc(2, 'tools/call', {
+      name: 'hermes_studio_browser_toolset',
+      arguments: {
+        action: 'call',
+        tool: 'hermes_studio_browser_tabs',
+        arguments: { action: 'list', profile: 'alpha' },
+      },
+    })
+    expect(alpha.result.isError).not.toBe(true)
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      url: '/api/browser/agent',
+      authorization: 'Bearer alpha-profile-token',
+      profile: 'alpha',
+      body: { method: 'tabs.list', params: {} },
+    })
+
+    const mismatched = await rpc(3, 'tools/call', {
+      name: 'hermes_studio_browser_toolset',
+      arguments: {
+        action: 'call',
+        tool: 'hermes_studio_browser_tabs',
+        arguments: { action: 'list', profile: 'missing-profile' },
+      },
+    })
+    expect(mismatched.result.isError).toBe(true)
+    expect(mismatched.result.content[0].text).toContain('browser authentication is unavailable')
+    expect(requests).toHaveLength(1)
   })
 
   it('exposes one compact category tool and preserves browser MCP image results', async () => {
     root = await mkdtemp(join(tmpdir(), 'hermes-browser-mcp-'))
+    await mkdir(join(root, 'profiles', 'default'), { recursive: true, mode: 0o700 })
+    await writeFile(join(root, 'profiles', 'default', '.model-run-token'), 'default-profile-token\n', { mode: 0o600 })
     const clients: string[] = []
     const registeredPids: number[] = []
     let failScreenshot = false
@@ -88,7 +171,7 @@ describe('hermes-studio browser MCP toolset', () => {
         response.end(JSON.stringify({ client_id: 'broker-client-1', session_token: 'session-token' }))
         return
       }
-      clients.push(String(request.headers['x-hermes-browser-client'] || ''))
+      clients.push(String(request.headers.authorization || ''))
       if (body.method === 'screenshot' && failScreenshot) {
         response.statusCode = 400
         response.end(JSON.stringify({ error: 'capture failed' }))
@@ -116,7 +199,7 @@ describe('hermes-studio browser MCP toolset', () => {
     }), { mode: 0o600 })
 
     child = spawn(process.execPath, [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'], {
-      env: { ...process.env, HERMES_WEB_UI_HOME: root },
+      env: { ...process.env, HERMES_WEB_UI_HOME: root, HERMES_WEB_UI_URL: `http://127.0.0.1:${address.port}`, HERMES_WEB_UI_PROFILE: 'default', HERMES_WEB_UI_TOKEN: '', AUTH_TOKEN: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const rpc = rpcClient(child)
@@ -139,7 +222,10 @@ describe('hermes-studio browser MCP toolset', () => {
       name: 'hermes_studio_browser_toolset',
       arguments: { action: 'describe', tool: 'hermes_studio_browser_screenshot' },
     })
-    expect(JSON.parse(described.result.content[0].text).inputSchema.required).toContain('tab_id')
+    const describedSchema = JSON.parse(described.result.content[0].text).inputSchema
+    expect(describedSchema.required).toContain('tab_id')
+    expect(describedSchema.properties.profile).toMatchObject({ type: 'string' })
+    expect(describedSchema.properties.token).toMatchObject({ type: 'string' })
 
     await rpc(5, 'tools/call', {
       name: 'hermes_studio_browser_toolset',
@@ -167,10 +253,10 @@ describe('hermes-studio browser MCP toolset', () => {
       },
     })
     expect(clients).toHaveLength(3)
-    expect(clients[0]).toBeTruthy()
+    expect(clients[0]).toBe('Bearer default-profile-token')
     expect(clients[0]).toBe(clients[1])
     expect(clients[1]).toBe(clients[2])
-    expect(registeredPids).toEqual([child.pid])
+    expect(registeredPids).toEqual([])
 
     failScreenshot = true
     const fallback = await rpc(8, 'tools/call', {
@@ -182,6 +268,6 @@ describe('hermes-studio browser MCP toolset', () => {
 
     await rm(join(brokerRoot, 'broker.json'))
     const unavailable = await rpc(9, 'tools/list')
-    expect(unavailable.result.tools).toEqual([])
+    expect(unavailable.result.tools).toHaveLength(1)
   })
 })

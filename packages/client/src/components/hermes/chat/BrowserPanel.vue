@@ -2,7 +2,21 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NInput, NPopover, NSelect, useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { desktopBridge, type DesktopBrowserDownload, type DesktopBrowserSelection, type DesktopBrowserState } from '@/utils/desktop-bridge'
+import {
+  activateBrowserProvider,
+  browserProvider,
+  browserProviders,
+  invalidateBrowserProviderContext,
+  navigateBrowserAddress,
+  selectBrowserProvider,
+  transitionBrowserProfile,
+  type BrowserDownload,
+  type BrowserProvider,
+  type BrowserProviderDescriptor,
+  type BrowserSelection,
+  type BrowserState,
+} from '@/browser/provider'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const emit = defineEmits<{
   attach: [payload: { file: File; context: string }]
@@ -11,7 +25,12 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
-const bridge = desktopBridge()?.browser
+const profilesStore = useProfilesStore()
+let bridge: BrowserProvider = browserProvider()
+const providers = ref<BrowserProviderDescriptor[]>([])
+const activeProviderId = ref(bridge.id)
+const activeProvider = computed(() => providers.value.find(provider => provider.id === activeProviderId.value))
+const activeCapabilities = computed(() => activeProvider.value?.capabilities)
 const EXTERNAL_OVERLAY_SELECTOR = [
   '[data-desktop-browser-overlay]',
   '.n-modal-mask',
@@ -38,9 +57,11 @@ const EXTERNAL_OVERLAY_SELECTOR = [
   '[role="menu"]',
 ].join(',')
 const OVERLAY_RECHECK_DELAYS = [60, 180, 360]
-const state = ref<DesktopBrowserState | null>(null)
+const state = ref<BrowserState | null>(null)
 const address = ref('')
 const viewport = ref<HTMLElement>()
+const webViewUrl = ref('')
+const providerContextAttached = ref(false)
 const busy = ref(false)
 const loadError = ref('')
 const externalOverlayOpen = ref(false)
@@ -48,8 +69,8 @@ const annotationNote = ref('')
 const annotations = ref<Array<{
   marker: number
   mode: 'element' | 'region'
-  region: DesktopBrowserSelection['region']
-  element?: DesktopBrowserSelection['element']
+  region: BrowserSelection['region']
+  element?: BrowserSelection['element']
   note: string
 }>>([])
 const annotationCapture = ref<{
@@ -58,15 +79,15 @@ const annotationCapture = ref<{
   tabId: string
   url: string
   title: string
-  viewport: DesktopBrowserSelection['viewport']
+  viewport: BrowserSelection['viewport']
 } | null>(null)
 const annotationTabId = ref<string | null>(null)
 const pendingAnnotation = ref<{
   marker: number
   mode: 'element' | 'region'
-  viewport: DesktopBrowserSelection['viewport']
-  region: DesktopBrowserSelection['region']
-  element?: DesktopBrowserSelection['element']
+  viewport: BrowserSelection['viewport']
+  region: BrowserSelection['region']
+  element?: BrowserSelection['element']
 } | null>(null)
 let resizeObserver: ResizeObserver | null = null
 let modalObserver: MutationObserver | null = null
@@ -76,10 +97,15 @@ let annotatingTabId: string | null = null
 let unmounting = false
 let annotationNoteUpdate: Promise<unknown> = Promise.resolve()
 let overlayCheckFrame = 0
+let providerContextEpoch = 0
+let mounted = false
 const overlayCheckTimers = new Map<number, number>()
 
 const activeTab = computed(() => state.value?.tabs.find(tab => tab.id === state.value?.activeTabId))
 const profileOptions = computed(() => state.value?.profiles.map(profile => ({ label: profile.name, value: profile.id })) || [])
+const providerOptions = computed(() => providers.value
+  .filter(provider => provider.available)
+  .map(provider => ({ label: provider.label, value: provider.id })))
 const activeProfileDownloads = computed(() => state.value?.downloads
   .filter(item => item.profileId === state.value?.activeProfileId)
   .slice(0, 20) || [])
@@ -108,14 +134,112 @@ const annotationAnchorStyle = computed(() => {
 })
 
 watch(() => activeTab.value?.url, value => { address.value = value || '' }, { immediate: true })
+watch([activeProviderId, () => activeTab.value?.id, () => activeTab.value?.agentControl, providerContextAttached], ([_providerId, tabId]) => {
+  const provider = bridge
+  if (webViewUrl.value) provider.revokeViewUrl?.(webViewUrl.value)
+  webViewUrl.value = ''
+  if (!providerContextAttached.value || provider.kind !== 'remote' || !tabId || !provider.getViewUrl) return
+  const epoch = providerContextEpoch
+  const profile = profilesStore.activeProfileName
+  void provider.getViewUrl(tabId).then(url => {
+    if (providerContextAttached.value && epoch === providerContextEpoch && profilesStore.activeProfileName === profile && bridge === provider && activeTab.value?.id === tabId) webViewUrl.value = url
+  }).catch(error => {
+    if (providerContextAttached.value && epoch === providerContextEpoch && profilesStore.activeProfileName === profile && bridge === provider && activeTab.value?.id === tabId) {
+      loadError.value = error instanceof Error ? error.message : String(error)
+    }
+  })
+}, { immediate: true })
 watch(externalOverlayOpen, () => { void nextTick(syncViewport) })
+watch(() => profilesStore.activeProfileName, (next, previous) => {
+  if (mounted && next && next !== previous) void reloadProviderContext(previous || undefined)
+})
 
-function applyState(next: DesktopBrowserState): void {
+function detachCurrentContext(): Promise<unknown> {
+  providerContextAttached.value = false
+  const previous = bridge
+  if (webViewUrl.value) previous.revokeViewUrl?.(webViewUrl.value)
+  webViewUrl.value = ''
+  stopStateListener?.()
+  stopAnnotationRequestListener?.()
+  stopStateListener = undefined
+  stopAnnotationRequestListener = undefined
+  resetAnnotationSession()
+  state.value = null
+  return previous.setViewport({ x: 0, y: 0, width: 1, height: 1 }, false).catch(() => undefined)
+}
+
+async function bindProvider(next: BrowserProvider, epoch: number): Promise<boolean> {
+  // The server has already committed the provider selection. Move the local
+  // control plane before probing runtime state so a failed probe cannot leave
+  // a stale bridge controlling the provider the server deactivated.
+  bridge = next
+  activeProviderId.value = next.id
+  const nextState = await next.getState()
+  if (epoch !== providerContextEpoch || unmounting) return false
+  state.value = nextState
+  stopStateListener = next.onStateChange(applyState)
+  stopAnnotationRequestListener = next.onAnnotationRequest(request => {
+    if (state.value?.tabs.some(tab => tab.id === request.tabId)) annotate(request.mode, request.tabId)
+  })
+  providerContextAttached.value = true
+  await nextTick(syncViewport)
+  return true
+}
+
+async function reloadProviderContext(previousProfile?: string): Promise<void> {
+  const epoch = ++providerContextEpoch
+  invalidateBrowserProviderContext()
+  const detached = detachCurrentContext()
+  busy.value = true
+  try {
+    await detached
+    if (previousProfile) await transitionBrowserProfile(previousProfile)
+    if (epoch !== providerContextEpoch || unmounting) return
+    const nextProviders = await browserProviders({ syncLocalSelection: false })
+    if (epoch !== providerContextEpoch || unmounting) return
+    const selected = nextProviders.find(provider => provider.selected)
+    if (!selected) throw new Error('No browser provider is selected for the active Hermes profile')
+    if (!selected.available) throw new Error(`Selected browser provider is not available: ${selected.id}`)
+    const next = activateBrowserProvider(selected.id)
+    if (!await bindProvider(next, epoch)) return
+    providers.value = nextProviders
+  } catch (error) {
+    if (epoch === providerContextEpoch && !unmounting) {
+      loadError.value = error instanceof Error ? error.message : String(error)
+      message.error(loadError.value)
+    }
+  } finally {
+    if (epoch === providerContextEpoch) busy.value = false
+  }
+}
+
+async function switchProvider(providerId: string): Promise<void> {
+  if (providerId === activeProviderId.value || busy.value) return
+  const epoch = ++providerContextEpoch
+  invalidateBrowserProviderContext()
+  const detached = detachCurrentContext()
+  busy.value = true
+  try {
+    await detached
+    await selectBrowserProvider(providerId, { syncLocalSelection: false })
+    if (epoch !== providerContextEpoch || unmounting) return
+    const next = activateBrowserProvider(providerId)
+    if (!await bindProvider(next, epoch)) return
+    const nextProviders = await browserProviders({ syncLocalSelection: false })
+    if (epoch === providerContextEpoch) providers.value = nextProviders
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    busy.value = false
+  }
+}
+
+function applyState(next: BrowserState): void {
   state.value = next
 }
 
 async function syncViewport(): Promise<void> {
-  if (!bridge || !viewport.value) return
+  if (!providerContextAttached.value || !bridge || !viewport.value) return
   const rect = viewport.value.getBoundingClientRect()
   const visible = !externalOverlayOpen.value && !pendingAnnotation.value
     && rect.width > 0 && rect.height > 0 && document.visibilityState === 'visible'
@@ -126,6 +250,7 @@ async function run(action: () => Promise<unknown>): Promise<void> {
   busy.value = true
   try {
     await action()
+    applyState(await bridge.getState())
   } catch (error) {
     if (!unmounting) message.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -134,9 +259,8 @@ async function run(action: () => Promise<unknown>): Promise<void> {
 }
 
 function navigate(): void {
-  const tab = activeTab.value
-  if (!tab || !address.value.trim()) return
-  void run(() => bridge!.navigate(tab.id, address.value.trim()))
+  if (!address.value.trim()) return
+  void run(() => navigateBrowserAddress(bridge, activeTab.value?.id, address.value))
 }
 
 function navigationAction(action: 'back' | 'forward' | 'reload' | 'stop'): void {
@@ -192,16 +316,16 @@ function formatBytes(input: number): string {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`
 }
 
-function downloadPercent(item: DesktopBrowserDownload): number | null {
+function downloadPercent(item: BrowserDownload): number | null {
   if (item.totalBytes <= 0) return null
   return Math.min(100, Math.max(0, Math.round(item.receivedBytes / item.totalBytes * 100)))
 }
 
-function downloadStateLabel(stateValue: DesktopBrowserDownload['state']): string {
+function downloadStateLabel(stateValue: BrowserDownload['state']): string {
   return t(`browser.downloadState${stateValue[0].toUpperCase()}${stateValue.slice(1)}`)
 }
 
-function downloadSummary(item: DesktopBrowserDownload): string {
+function downloadSummary(item: BrowserDownload): string {
   const percent = downloadPercent(item)
   const transferred = item.totalBytes > 0
     ? `${formatBytes(item.receivedBytes)} / ${formatBytes(item.totalBytes)}`
@@ -230,6 +354,10 @@ function takeOver(): void {
 }
 
 function annotate(mode: 'element' | 'region', tabId?: string): void {
+  if (activeCapabilities.value?.annotations === false) {
+    message.error('Annotations are not supported by the selected browser provider')
+    return
+  }
   const tab = tabId ? state.value?.tabs.find(item => item.id === tabId) : activeTab.value
   if (!tab) return
   if (annotationTabId.value && annotationTabId.value !== tab.id) return
@@ -385,13 +513,9 @@ function scheduleExternalOverlayCheck(): void {
 }
 
 onMounted(async () => {
-  if (!bridge) return
   try {
-    state.value = await bridge.getState()
-    stopStateListener = bridge.onStateChange(applyState)
-    stopAnnotationRequestListener = bridge.onAnnotationRequest(request => {
-      if (state.value?.tabs.some(tab => tab.id === request.tabId)) annotate(request.mode, request.tabId)
-    })
+    mounted = true
+    await reloadProviderContext()
     resizeObserver = new ResizeObserver(() => { scheduleExternalOverlayCheck(); void syncViewport() })
     if (viewport.value) resizeObserver.observe(viewport.value)
     modalObserver = new MutationObserver(scheduleExternalOverlayCheck)
@@ -408,6 +532,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unmounting = true
+  mounted = false
+  providerContextEpoch += 1
+  if (webViewUrl.value) bridge.revokeViewUrl?.(webViewUrl.value)
   if (bridge && annotatingTabId) void bridge.cancelAnnotation(annotatingTabId)
   if (bridge && annotationTabId.value) void bridge.clearAnnotations(annotationTabId.value)
   stopStateListener?.()
@@ -426,6 +553,7 @@ onUnmounted(() => {
 <template>
   <section class="browser-panel">
     <div v-if="!bridge" class="unavailable">{{ t('browser.desktopOnly') }}</div>
+    <div v-else-if="state && !state.available" class="unavailable">{{ t('browser.unavailable') }}</div>
     <template v-else>
       <div class="tab-strip">
         <button v-for="tab in state?.tabs" :key="tab.id" class="tab" :class="{ active: tab.id === state?.activeTabId }" :disabled="hasAnnotationSession" @click="activateTab(tab.id)">
@@ -477,6 +605,19 @@ onUnmounted(() => {
         </button>
         <NInput v-model:value="address" size="small" :placeholder="t('browser.addressPlaceholder')" :disabled="busy || hasAnnotationSession" @keydown.enter="navigate" />
         <NSelect
+          v-if="providerOptions.length > 1"
+          class="provider-switcher"
+          size="small"
+          :value="activeProviderId"
+          :options="providerOptions"
+          :disabled="busy || hasAnnotationSession"
+          :consistent-menu-width="false"
+          title="Browser provider"
+          data-testid="browser-provider-switcher"
+          @update:value="switchProvider"
+        />
+        <NSelect
+          v-if="activeCapabilities?.profiles !== false"
           class="profile-switcher"
           size="small"
           :value="state?.activeProfileId"
@@ -487,7 +628,7 @@ onUnmounted(() => {
           data-testid="browser-profile-switcher"
           @update:value="switchProfile"
         />
-        <NPopover trigger="click" placement="bottom-end" :width="380">
+        <NPopover v-if="activeCapabilities?.downloads !== false" trigger="click" placement="bottom-end" :width="380">
           <template #trigger>
             <button class="download-trigger" :title="t('browser.downloads')" :aria-label="t('browser.downloads')">
               <span aria-hidden="true">⇩</span>
@@ -552,8 +693,16 @@ onUnmounted(() => {
       </div>
 
       <div v-show="!pendingAnnotation" ref="viewport" class="native-viewport">
+        <iframe
+          v-if="bridge.kind === 'remote' && webViewUrl"
+          class="runtime-viewport"
+          :class="{ 'input-locked': activeTab?.agentControl !== 'idle' }"
+          :src="webViewUrl"
+          sandbox="allow-scripts allow-same-origin"
+          title="Hermes Browser"
+        />
         <span v-if="loadError">{{ loadError }}</span>
-        <span v-else-if="!state">{{ t('common.loading') }}</span>
+        <span v-else-if="!state || (bridge.kind === 'remote' && activeTab && !webViewUrl)">{{ t('common.loading') }}</span>
       </div>
     </template>
   </section>
@@ -569,6 +718,7 @@ onUnmounted(() => {
 .toolbar { height: 46px; flex: 0 0 46px; padding: 7px 10px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px; }
 .toolbar-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .toolbar-stop-icon { fill: currentColor; stroke: none; }
+.provider-switcher { width: 112px; flex: 0 0 112px; }
 .profile-switcher { width: 136px; flex: 0 0 136px; }
 .download-trigger { position: relative; flex: 0 0 30px; padding: 0; }
 .download-trigger > b { position: absolute; top: -3px; right: -4px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: #ef4444; color: #fff; font: 10px/15px sans-serif; text-align: center; }
@@ -586,6 +736,8 @@ onUnmounted(() => {
 .annotation-session-bar { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 10px; color: #2563eb; background: rgba(59,130,246,.1); font-size: 12px; }
 .annotation-session-bar > div { display: flex; gap: 6px; }
 .native-viewport { flex: 1; min-height: 100px; position: relative; display: grid; place-items: center; background: #fff; color: #777; }
+.runtime-viewport { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.runtime-viewport.input-locked { pointer-events: none; }
 .annotation-editor { flex: 1; min-height: 0; overflow: auto; padding: 12px; background: var(--card-color, #fff); }
 .annotation-preview { position: relative; width: 100%; margin-bottom: 168px; line-height: 0; }
 .annotation-preview > img { display: block; width: 100%; height: auto; border: 1px solid var(--border-color); border-radius: 8px; background: #fff; box-sizing: border-box; }

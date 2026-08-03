@@ -18,6 +18,7 @@ import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
 import { listUserProfiles } from '../../db/hermes/users-store'
+import { browserProviderRegistry } from '../../services/browser'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
@@ -653,29 +654,31 @@ export async function remove(ctx: any) {
     return
   }
   try {
-    try {
-      const result = await bridgeCleanupClient().destroyProfile(name)
-      logger.info('[profiles] destroyed bridge sessions for deleted profile "%s" destroyed=%s', name, result.destroyed)
-    } catch (err) {
-      logger.warn(err, '[profiles] failed to destroy bridge sessions for deleted profile "%s"', name)
-    }
+    await browserProviderRegistry.withProfileAuthorityRevoked(name, async () => {
+      try {
+        const result = await bridgeCleanupClient().destroyProfile(name)
+        logger.info('[profiles] destroyed bridge sessions for deleted profile "%s" destroyed=%s', name, result.destroyed)
+      } catch (err) {
+        logger.warn(err, '[profiles] failed to destroy bridge sessions for deleted profile "%s"', name)
+      }
 
-    await prepareGatewayForProfileDelete(name)
+      await prepareGatewayForProfileDelete(name)
 
-    const ok = await hermesCli.deleteProfile(name)
-    if (ok && !profileDirectoryExists(name)) {
-      removeProfileMetadata(name)
-      ctx.body = { success: true }
-    } else if (ok) {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to delete profile: profile directory still exists' }
-    } else if (deleteForbiddenProfileFromDisk(name)) {
-      removeProfileMetadata(name)
-      ctx.body = { success: true, fallback: 'removed_reserved_profile_from_disk' }
-    } else {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to delete profile' }
-    }
+      const ok = await hermesCli.deleteProfile(name)
+      if (ok && !profileDirectoryExists(name)) {
+        removeProfileMetadata(name)
+        ctx.body = { success: true }
+      } else if (ok) {
+        ctx.status = 500
+        ctx.body = { error: 'Failed to delete profile: profile directory still exists' }
+      } else if (deleteForbiddenProfileFromDisk(name)) {
+        removeProfileMetadata(name)
+        ctx.body = { success: true, fallback: 'removed_reserved_profile_from_disk' }
+      } else {
+        ctx.status = 500
+        ctx.body = { error: 'Failed to delete profile' }
+      }
+    })
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -696,14 +699,16 @@ export async function rename(ctx: any) {
     return
   }
   try {
-    const ok = await hermesCli.renameProfile(ctx.params.name, new_name)
-    if (ok) {
-      renameProfileMetadata(ctx.params.name, new_name)
-      ctx.body = { success: true }
-    } else {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to rename profile' }
-    }
+    await browserProviderRegistry.withProfileAuthorityRevoked(ctx.params.name, async () => {
+      const ok = await hermesCli.renameProfile(ctx.params.name, new_name)
+      if (ok) {
+        renameProfileMetadata(ctx.params.name, new_name)
+        ctx.body = { success: true }
+      } else {
+        ctx.status = 500
+        ctx.body = { error: 'Failed to rename profile' }
+      }
+    })
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }

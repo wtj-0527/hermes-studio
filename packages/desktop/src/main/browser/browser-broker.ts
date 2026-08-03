@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -31,9 +31,31 @@ interface BrokerClient {
   pid?: number
 }
 
+interface BrokerOperationRecord {
+  fingerprint: string
+  promise: Promise<unknown>
+  createdAt: number
+  settled: boolean
+}
+
 const BODY_LIMIT = 1024 * 1024
 const LEASE_TTL_MS = 60_000
 const STOP_TIMEOUT_MS = 2_000
+const OPERATION_TTL_MS = 10 * 60_000
+const MAX_OPERATION_RECORDS = 1024
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+function operationFingerprint(method: string, params: Record<string, unknown>): string {
+  return createHash('sha256').update(canonicalJson({ method, params })).digest('hex')
+}
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -68,6 +90,7 @@ export class BrowserBroker {
   private readonly clients = new Map<string, BrokerClient>()
   private readonly queues = new Map<string, Promise<void>>()
   private readonly tabGenerations = new Map<string, number>()
+  private readonly operations = new Map<string, BrokerOperationRecord>()
   private activeOperations = 0
   private readonly capacityWaiters: Array<() => void> = []
 
@@ -114,6 +137,7 @@ export class BrowserBroker {
     this.clients.clear()
     this.queues.clear()
     this.tabGenerations.clear()
+    this.operations.clear()
     const server = this.server
     this.server = null
     this.descriptor = null
@@ -187,15 +211,28 @@ export class BrowserBroker {
       const operationId = typeof body.operation_id === 'string' && body.operation_id.trim()
         ? body.operation_id.trim().slice(0, 200)
         : randomUUID()
-      const tabId = typeof params.tab_id === 'string' ? params.tab_id.trim() : ''
-      const tabGeneration = tabId ? this.tabGenerations.get(tabId) || 0 : 0
-      const result = tabId
-        ? await this.queued(tabId, () => this.execute(clientId, method, params, operationId, tabGeneration))
-        : await this.withCapacity(() => this.execute(clientId, method, params, operationId, tabGeneration))
+      const fingerprint = operationFingerprint(method, params)
+      const operationKey = `${clientId}:${operationId}`
+      this.cleanupOperationRecords()
+      const existing = this.operations.get(operationKey)
+      if (existing && existing.fingerprint !== fingerprint) throw new Error('operation_id conflicts with a different browser request')
+      let operation = existing
+      if (!operation) {
+        if (this.operations.size >= MAX_OPERATION_RECORDS) throw new Error('Browser operation history is at capacity; retry after in-flight operations settle')
+        const tabId = typeof params.tab_id === 'string' ? params.tab_id.trim() : ''
+        const tabGeneration = tabId ? this.tabGenerations.get(tabId) || 0 : 0
+        const promise = tabId
+          ? this.queued(tabId, () => this.execute(clientId, method, params, operationId, tabGeneration))
+          : this.withCapacity(() => this.execute(clientId, method, params, operationId, tabGeneration))
+        operation = { fingerprint, promise, createdAt: Date.now(), settled: false }
+        this.operations.set(operationKey, operation)
+        void promise.finally(() => { operation!.settled = true }).catch(() => undefined)
+      }
+      const result = await operation.promise
       this.send(response, 200, { operation_id: operationId, result })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.send(response, /lease|control|cancel|takeover/i.test(message) ? 409 : 400, { error: message })
+      this.send(response, /lease|control|cancel|takeover|operation_id conflicts/i.test(message) ? 409 : 400, { error: message })
     }
   }
 
@@ -368,6 +405,19 @@ export class BrowserBroker {
     }
     for (const [clientId, client] of this.clients) {
       if (current - client.lastSeenAt > 24 * 60 * 60 * 1000) this.clients.delete(clientId)
+    }
+  }
+
+  private cleanupOperationRecords(): void {
+    const expiredBefore = Date.now() - OPERATION_TTL_MS
+    for (const [key, operation] of this.operations) {
+      if (operation.settled && operation.createdAt < expiredBefore) this.operations.delete(key)
+    }
+    if (this.operations.size <= MAX_OPERATION_RECORDS) return
+    for (const [key, operation] of this.operations) {
+      if (!operation.settled) continue
+      this.operations.delete(key)
+      if (this.operations.size <= MAX_OPERATION_RECORDS) break
     }
   }
 

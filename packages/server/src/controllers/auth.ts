@@ -29,6 +29,7 @@ import { listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
 import { startOutboundRelayClient, stopOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
 import { getLanEndpointKind } from '../services/lan-discovery'
 import { getPublicSystemInfo } from '../services/system-info'
+import { browserProviderRegistry } from '../services/browser'
 import { config } from '../config'
 
 /**
@@ -69,6 +70,18 @@ export async function currentUser(ctx: Context) {
         : user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
     },
   }
+}
+
+/** POST /api/auth/logout — revoke active Browser authority before the client drops its JWT. */
+export async function logout(ctx: Context) {
+  const userId = Number(ctx.state.user?.id)
+  if (!Number.isInteger(userId) || userId <= 0) {
+    ctx.status = 401
+    ctx.body = { error: 'Authentication required' }
+    return
+  }
+  await browserProviderRegistry.withUserAuthorityRevoked(userId, async () => undefined)
+  ctx.body = { success: true }
 }
 
 const MAX_AVATAR_BYTES = 500 * 1024
@@ -617,7 +630,7 @@ export async function updateManagedUser(ctx: Context) {
     }
   }
 
-  updateUser({
+  await browserProviderRegistry.withUserAuthorityRevoked(user.id, async () => updateUser({
     userId: user.id,
     username,
     password: password || undefined,
@@ -625,7 +638,7 @@ export async function updateManagedUser(ctx: Context) {
     status: status || undefined,
     profiles: nextRole === 'super_admin' ? [] : profiles,
     defaultProfile: body.defaultProfile,
-  })
+  }))
   ctx.body = { user: findUserById(user.id), users: listUsers() }
 }
 
@@ -654,7 +667,7 @@ export async function deleteManagedUser(ctx: Context) {
   }
 
   await removeAllUserThemeAssets(user.id)
-  deleteUser(user.id)
+  await browserProviderRegistry.withUserAuthorityRevoked(user.id, async () => deleteUser(user.id))
   ctx.body = { success: true, users: listUsers() }
 }
 

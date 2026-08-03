@@ -1,6 +1,6 @@
 export default {
   browser: {
-    title: '瀏覽器', settings: '瀏覽器設定', desktopOnly: '內建瀏覽器僅在 Hermes Studio 桌面版可用。', newTab: '新分頁',
+    title: '瀏覽器', settings: '瀏覽器設定', desktopOnly: '內建瀏覽器僅在 Hermes Studio 桌面版可用。', unavailable: '託管瀏覽器執行階段目前無法使用。聊天與工作流程仍可正常使用。', newTab: '新分頁',
     back: '上一頁', forward: '下一頁', reload: '重新整理', stop: '停止', addressPlaceholder: '搜尋或輸入網址',
     selectElement: '選取元素', selectRegion: '框選區域', annotationPlaceholder: '描述希望 Agent 檢查或修改的內容…', selectionData: '瀏覽器選取資料', annotationAdded: '截圖已加入對話輸入框', annotationCount: '已標註 {count} 處', annotationLabel: '標註 {index}', clearAnnotations: '清除標註', finishAnnotation: '完成',
     agent: 'Agent', agentControlling: '{agent} 正在控制此分頁', agentWaiting: '{agent} 正在等待你的確認', takeOver: '接管', tabCrashed: '此分頁已崩潰。', recoverTab: '重新載入', profiles: '設定檔', profileName: '設定檔名稱', addProfile: '新增設定檔', currentProfile: '目前使用', switchProfile: '切換使用', editProfile: '編輯設定檔',
@@ -246,6 +246,7 @@ export default {
     updateSuccess: '更新成功，請稍後重新整理頁面，如長時間未啟動，請手動啟動',
     updateFailed: '更新失敗',
     logout: '登出',
+    logoutFailed: '瀏覽器工作階段未能安全釋放，尚未登出，請重試。',
     nodeVersionWarning: '偵測到 Node.js v{version}，請升級至 23 以上版本。',
     changelog: '更新日誌',
     noChangelog: '目前無更新日誌',
