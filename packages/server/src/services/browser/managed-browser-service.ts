@@ -52,6 +52,8 @@ interface OwnerRuntime {
   incarnation: string
   managedTabIds: Set<string>
   activeTabId?: string
+  pageStates: Map<string, BrowserPageState>
+  pageStateRead?: Promise<BrowserPageState[]>
   visible: boolean
   agentControls: Map<string, {
     state: 'idle' | 'active' | 'waiting-for-user'
@@ -117,6 +119,7 @@ export interface PortableBrowserState {
 }
 
 const MAX_MANAGED_TABS = 8
+const PAGE_STATE_READ_TIMEOUT_MS = 3_000
 
 function ownerKey(owner: BrowserOwner): string {
   const userId = Number(owner.userId)
@@ -124,6 +127,11 @@ function ownerKey(owner: BrowserOwner): string {
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('Authenticated browser user is required')
   if (!profile || profile.length > 200) throw new Error('Browser profile is required')
   return `${userId}:${profile}`
+}
+
+function isMissingBrowserPageError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return /\bbrowser (?:page|tab) not found\b/i.test(message)
 }
 
 function isPrivateRuntimeHost(rawHost: string): boolean {
@@ -237,14 +245,18 @@ export class ManagedBrowserService {
     await this.requirePage(runtime, tabId)
     await runtime.session.closePage(tabId)
     runtime.managedTabIds.delete(tabId)
+    runtime.pageStates.delete(tabId)
     runtime.agentControls.delete(tabId)
     this.revokeViewGrants(runtime.ownerKey, tabId)
     this.revokeViewConnections(runtime.ownerKey, tabId)
     runtime.tabGenerations.set(tabId, (runtime.tabGenerations.get(tabId) || 0) + 1)
-    const pages = (await runtime.session.listPages()).filter(page => runtime.managedTabIds.has(page.id))
+    if (!runtime.managedTabIds.size) {
+      await this.releaseOwner(runtime)
+      return this.emptyState(owner.profile, true)
+    }
+    const pages = (await this.readPageStates(runtime)).filter(page => runtime.managedTabIds.has(page.id))
     if (runtime.activeTabId === tabId) runtime.activeTabId = pages[0]?.id
-    if (!runtime.managedTabIds.size) await this.releaseOwner(runtime)
-    return runtime.managedTabIds.size ? await this.stateForRuntime(runtime) : this.emptyState(owner.profile, true)
+    return this.cachedStateForRuntime(runtime)
   }
 
   async userCloseTab(owner: BrowserOwner, tabId: string): Promise<PortableBrowserState> {
@@ -295,17 +307,34 @@ export class ManagedBrowserService {
 
   async takeOver(owner: BrowserOwner, tabId: string): Promise<PortableBrowserState> {
     const runtime = this.requireOwner(owner)
-    await this.requirePage(runtime, tabId)
+    if (!runtime.managedTabIds.has(tabId)) throw new Error('Browser tab not found')
     if (runtime.takingOver.has(tabId)) throw new Error('Browser user takeover is already in progress')
     runtime.takingOver.add(tabId)
     runtime.tabGenerations.set(tabId, (runtime.tabGenerations.get(tabId) || 0) + 1)
     this.revokeViewGrants(runtime.ownerKey, tabId)
     this.revokeViewConnections(runtime.ownerKey, tabId)
     try {
-      await runtime.session.cancelAgentOperation(tabId)
+      let pageMissing = false
+      try {
+        await runtime.session.cancelAgentOperation(tabId)
+      } catch (error) {
+        if (!isMissingBrowserPageError(error)) throw error
+        pageMissing = true
+      }
       await runtime.queues.get(tabId)?.catch(() => undefined)
-      runtime.agentControls.set(tabId, { state: 'idle' })
-      return await this.stateForRuntime(runtime)
+      if (pageMissing) {
+        runtime.managedTabIds.delete(tabId)
+        runtime.pageStates.delete(tabId)
+        runtime.agentControls.delete(tabId)
+        runtime.activeTabId = runtime.activeTabId === tabId ? undefined : runtime.activeTabId
+        if (!runtime.managedTabIds.size) {
+          await this.releaseOwner(runtime)
+          return this.emptyState(owner.profile, true)
+        }
+      } else {
+        runtime.agentControls.set(tabId, { state: 'idle' })
+      }
+      return this.cachedStateForRuntime(runtime)
     } finally {
       runtime.takingOver.delete(tabId)
     }
@@ -324,15 +353,15 @@ export class ManagedBrowserService {
       this.revokeViewGrants(runtime.ownerKey, tabId)
       this.revokeViewConnections(runtime.ownerKey, tabId)
     }
-    try {
-      await Promise.all([...runtime.managedTabIds].map(async tabId => {
+    await Promise.all([...runtime.managedTabIds].map(async tabId => {
+      try {
         await runtime.session.cancelAgentOperation(tabId)
-        await runtime.queues.get(tabId)?.catch(() => undefined)
-      }))
-      await this.releaseOwner(runtime)
-    } finally {
-      runtime.takingOver.clear()
-    }
+      } catch (error) {
+        if (!isMissingBrowserPageError(error)) throw error
+      }
+      await runtime.queues.get(tabId)?.catch(() => undefined)
+    }))
+    await this.releaseOwner(runtime)
   }
 
   async issueView(owner: BrowserOwner, tabId: string): Promise<{ token: string; url: string }> {
@@ -580,6 +609,7 @@ export class ManagedBrowserService {
           session,
           incarnation: randomUUID(),
           managedTabIds: new Set(),
+          pageStates: new Map(),
           visible: false,
           agentControls: new Map(),
           queues: new Map(),
@@ -614,7 +644,9 @@ export class ManagedBrowserService {
 
   private async requirePage(runtime: OwnerRuntime, pageId: string): Promise<BrowserPageState> {
     if (!runtime.managedTabIds.has(pageId)) throw new Error('Browser tab not found')
-    const page = (await runtime.session.listPages()).find(item => item.id === pageId)
+    const cached = runtime.pageStates.get(pageId)
+    if (cached) return { ...cached }
+    const page = (await this.readPageStates(runtime)).find(item => item.id === pageId)
     if (!page) throw new Error('Browser tab not found')
     return page
   }
@@ -702,6 +734,7 @@ export class ManagedBrowserService {
   }
 
   private publicPage(runtime: OwnerRuntime, page: BrowserPageState): PortableBrowserState['tabs'][number] {
+    runtime.pageStates.set(page.id, { ...page })
     const control = runtime.agentControls.get(page.id) || { state: 'idle' as const }
     return {
       ...page,
@@ -714,9 +747,29 @@ export class ManagedBrowserService {
   }
 
   private async stateForRuntime(runtime: OwnerRuntime): Promise<PortableBrowserState> {
-    const pages = (await runtime.session.listPages()).filter(page => runtime.managedTabIds.has(page.id))
-    for (const tabId of [...runtime.managedTabIds]) {
-      if (!pages.some(page => page.id === tabId)) runtime.managedTabIds.delete(tabId)
+    const pages = (await this.readPageStates(runtime)).filter(page => runtime.managedTabIds.has(page.id))
+    const missingTabIds = [...runtime.managedTabIds].filter(tabId => !pages.some(page => page.id === tabId))
+    for (const tabId of missingTabIds) {
+      runtime.takingOver.add(tabId)
+      runtime.tabGenerations.set(tabId, (runtime.tabGenerations.get(tabId) || 0) + 1)
+      this.revokeViewGrants(runtime.ownerKey, tabId)
+      this.revokeViewConnections(runtime.ownerKey, tabId)
+    }
+    await Promise.all(missingTabIds.map(async tabId => {
+      try {
+        await runtime.session.cancelAgentOperation(tabId)
+      } catch (error) {
+        if (!isMissingBrowserPageError(error)) throw error
+      }
+      await runtime.queues.get(tabId)?.catch(() => undefined)
+      runtime.managedTabIds.delete(tabId)
+      runtime.pageStates.delete(tabId)
+      runtime.agentControls.delete(tabId)
+      runtime.takingOver.delete(tabId)
+      if (runtime.activeTabId === tabId) runtime.activeTabId = undefined
+    }))
+    if (missingTabIds.length && !runtime.activeTabId) {
+      runtime.activeTabId = pages.find(page => runtime.managedTabIds.has(page.id))?.id
     }
     if (!runtime.managedTabIds.size) {
       if (this.ownerQueues.has(runtime.ownerKey)) return this.emptyState(runtime.owner.profile, true)
@@ -724,6 +777,71 @@ export class ManagedBrowserService {
       return this.emptyState(runtime.owner.profile, true)
     }
     if (runtime.activeTabId && !pages.some(page => page.id === runtime.activeTabId)) runtime.activeTabId = pages[0]?.id
+    const now = new Date().toISOString()
+    return {
+      available: true,
+      activeProfileId: runtime.owner.profile,
+      ...(runtime.activeTabId ? { activeTabId: runtime.activeTabId } : {}),
+      tabs: pages.map(page => this.publicPage(runtime, page)),
+      profiles: [{
+        id: runtime.owner.profile,
+        name: runtime.owner.profile,
+        rootPath: '',
+        sessionPath: '',
+        downloadPath: '',
+        proxyMode: 'direct',
+        proxyRules: '',
+        askBeforeDownload: false,
+        downloadConflictPolicy: 'uniquify',
+        createdAt: now,
+        lastUsedAt: now,
+        tabs: pages.map(page => page.id),
+      }],
+      downloads: [],
+      permissions: [],
+      visible: runtime.visible,
+      maxTabs: MAX_MANAGED_TABS,
+    }
+  }
+
+  private async readPageStates(runtime: OwnerRuntime): Promise<BrowserPageState[]> {
+    if (!runtime.pageStateRead) {
+      const read = runtime.session.listPages()
+      runtime.pageStateRead = read
+      void read.finally(() => {
+        if (runtime.pageStateRead === read) runtime.pageStateRead = undefined
+      }).catch(() => undefined)
+    }
+    const read = runtime.pageStateRead
+    const timedOut = Symbol('page-state-read-timeout')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<typeof timedOut>(resolve => {
+      timer = setTimeout(() => resolve(timedOut), PAGE_STATE_READ_TIMEOUT_MS)
+      timer.unref?.()
+    })
+    let result: BrowserPageState[] | typeof timedOut
+    try {
+      result = await Promise.race([read, timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+    if (result === timedOut) {
+      if (runtime.pageStateRead === read) runtime.pageStateRead = undefined
+      return [...runtime.pageStates.values()].map(page => ({ ...page }))
+    }
+    if (runtime.pageStateRead === read) runtime.pageStateRead = undefined
+    const pageIds = new Set(result.map(page => page.id))
+    for (const pageId of runtime.pageStates.keys()) {
+      if (!pageIds.has(pageId)) runtime.pageStates.delete(pageId)
+    }
+    for (const page of result) runtime.pageStates.set(page.id, { ...page })
+    return result
+  }
+
+  private cachedStateForRuntime(runtime: OwnerRuntime): PortableBrowserState {
+    const pages = [...runtime.managedTabIds]
+      .map(id => runtime.pageStates.get(id))
+      .filter((page): page is BrowserPageState => Boolean(page))
     const now = new Date().toISOString()
     return {
       available: true,

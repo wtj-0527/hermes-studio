@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ManagedBrowserService,
+  type BrowserPageState,
   type BrowserRuntimeAdapter,
   type BrowserRuntimeSession,
 } from '../../packages/server/src/services/browser/managed-browser-service'
@@ -198,6 +199,120 @@ describe('ManagedBrowserService ownership boundary', () => {
     expect(service.allowsViewCapabilityInput(capability)).toBe(false)
   })
 
+  it('returns the last verified tab state when a Runtime page-state refresh hangs', async () => {
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    runtime.session.listPages = vi.fn(async () => await new Promise<never>(() => undefined))
+    vi.useFakeTimers()
+    try {
+      const list = service.agentRequest(owner, 'tabs.list', {})
+      await vi.advanceTimersByTimeAsync(3_000)
+      await expect(list).resolves.toMatchObject({
+        activeTabId: tab.id,
+        tabs: [{ id: tab.id, url: 'https://example.com' }],
+      })
+      expect(runtime.session.listPages).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts takeover cancellation without waiting for a hung Runtime page-state read', async () => {
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    runtime.session.listPages = vi.fn(async () => await new Promise<never>(() => undefined))
+    runtime.session.cancelAgentOperation = vi.fn(async () => undefined)
+
+    const takeover = service.takeOver(owner, tab.id)
+
+    await vi.waitFor(() => expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id))
+    await expect(takeover).resolves.toMatchObject({ activeTabId: tab.id })
+    expect(service.allowsViewInput('7:work', tab.id)).toBe(true)
+    await expect(service.userNavigate(owner, tab.id, 'https://example.org')).resolves.toMatchObject({
+      id: tab.id,
+      url: 'https://example.org',
+    })
+  })
+
+  it('recovers after a timed-out page-state read and releases when pages later disappear', async () => {
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    runtime.session.release = vi.fn(async () => undefined)
+    const never = new Promise<never>(() => undefined)
+    runtime.session.listPages = vi.fn()
+      .mockImplementationOnce(async () => await never)
+      .mockResolvedValueOnce([])
+
+    vi.useFakeTimers()
+    try {
+      const first = service.state(owner)
+      await vi.advanceTimersByTimeAsync(3_000)
+      await expect(first).resolves.toMatchObject({ tabs: [{ id: tab.id }] })
+      await expect(service.state(owner)).resolves.toMatchObject({ tabs: [] })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(runtime.session.listPages).toHaveBeenCalledTimes(2)
+    expect(runtime.session.release).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a late stale page-state read after a replacement read becomes authoritative', async () => {
+    const runtime = fakeRuntime()
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    let resolveStale!: (pages: BrowserPageState[]) => void
+    const currentPages = [{ ...tab, title: 'Current' }]
+    runtime.session.listPages = vi.fn()
+      .mockImplementationOnce(() => new Promise<BrowserPageState[]>(resolve => { resolveStale = resolve }))
+      .mockImplementation(async () => currentPages.map(page => ({ ...page })))
+
+    vi.useFakeTimers()
+    try {
+      const first = service.state(owner)
+      await vi.advanceTimersByTimeAsync(3_000)
+      await first
+      await expect(service.state(owner)).resolves.toMatchObject({ tabs: [{ id: tab.id, title: 'Current' }] })
+      resolveStale([{ ...tab, title: 'Stale' }])
+      await Promise.resolve()
+      await expect(service.state(owner)).resolves.toMatchObject({ tabs: [{ id: tab.id, title: 'Current' }] })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('prunes confirmed disappeared pages from the owner-scoped page-state cache', async () => {
+    const runtime = fakeRuntime()
+    let pages = [{ id: 'page-1', title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
+    runtime.session.listPages = vi.fn(async () => pages.map(page => ({ ...page })))
+    let nextPageId = 2
+    runtime.session.createPage = vi.fn(async url => {
+      const page = { id: `page-${nextPageId++}`, title: '', url, loading: false, canGoBack: false, canGoForward: false }
+      pages.push(page)
+      return { ...page }
+    })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    await service.createTab(owner, 'https://example.com')
+
+    for (let index = 0; index < 20; index += 1) {
+      const created = await service.createTab(owner, `https://${index}.example`)
+      pages = pages.filter(page => page.id !== created.id)
+      await service.state(owner)
+    }
+
+    const ownerRuntime = [...((service as unknown as { owners: Map<string, { pageStates: Map<string, BrowserPageState> }> }).owners.values())][0]
+    expect(ownerRuntime.pageStates.size).toBe(pages.length)
+    expect([...ownerRuntime.pageStates.keys()].sort()).toEqual(pages.map(page => page.id).sort())
+  })
+
   it('fences queued and in-flight Agent operations when the user takes over', async () => {
     let finishSnapshot!: () => void
     const runtime = fakeRuntime()
@@ -225,8 +340,42 @@ describe('ManagedBrowserService ownership boundary', () => {
     expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id)
   })
 
+  it('converges a stale cached-page takeover when the Runtime page is already gone', async () => {
+    const runtime = fakeRuntime()
+    runtime.session.release = vi.fn(async () => undefined)
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    const pendingView = await service.issueView(owner, tab.id)
+    runtime.session.cancelAgentOperation = vi.fn(async () => { throw new Error('Browser page not found') })
+
+    await expect(service.takeOver(owner, tab.id)).resolves.toMatchObject({ tabs: [] })
+
+    expect(runtime.session.release).toHaveBeenCalledOnce()
+    expect(service.allowsViewInput('7:work', tab.id)).toBe(false)
+    expect(() => service.resolveView(pendingView.token, owner)).toThrow('not found')
+    await expect(service.issueView(owner, tab.id)).rejects.toThrow('session not found')
+  })
+
+  it('converges deactivation when Runtime cancellation reports a stale missing tab', async () => {
+    const runtime = fakeRuntime()
+    runtime.session.release = vi.fn(async () => undefined)
+    runtime.session.cancelAgentOperation = vi.fn(async () => { throw new Error('Browser tab not found') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+    const tab = await service.createTab(owner, 'https://example.com')
+    const pendingView = await service.issueView(owner, tab.id)
+
+    await expect(service.deactivate(owner)).resolves.toBeUndefined()
+
+    expect(runtime.session.release).toHaveBeenCalledOnce()
+    expect(service.allowsViewAccess('7:work', tab.id)).toBe(false)
+    expect(service.allowsViewInput('7:work', tab.id)).toBe(false)
+    expect(() => service.resolveView(pendingView.token, owner)).toThrow('not found')
+    await expect(service.issueView(owner, tab.id)).rejects.toThrow('session not found')
+  })
+
   it('blocks live-view input before an Agent navigation reaches its first async Runtime call', async () => {
-    let finishListPages!: () => void
     let finishNavigate!: () => void
     const runtime = fakeRuntime()
     const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
@@ -235,12 +384,6 @@ describe('ManagedBrowserService ownership boundary', () => {
     const view = await service.issueView(owner, tab.id)
     const socketToken = service.consumeViewBootstrap(view.token).socketPath.split('/').at(-2)!
     const capability = service.consumeViewCapabilityWebSocket(socketToken)
-    let listPagesCalls = 0
-    runtime.session.listPages = vi.fn(async () => {
-      listPagesCalls += 1
-      if (listPagesCalls === 1) await new Promise<void>(resolve => { finishListPages = resolve })
-      return [{ id: tab.id, title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
-    })
     runtime.session.navigate = vi.fn(async (pageId, url) => {
       await new Promise<void>(resolve => { finishNavigate = resolve })
       return { id: pageId, title: 'Example', url, loading: false, canGoBack: true, canGoForward: false }
@@ -248,9 +391,6 @@ describe('ManagedBrowserService ownership boundary', () => {
 
     const operation = service.agentRequest(owner, 'navigate', { tab_id: tab.id, url: 'https://example.org' })
     expect(service.allowsViewCapabilityInput(capability)).toBe(false)
-    await vi.waitFor(() => expect(runtime.session.listPages).toHaveBeenCalledOnce())
-    expect(service.allowsViewCapabilityInput(capability)).toBe(false)
-    finishListPages()
     await vi.waitFor(() => expect(runtime.session.navigate).toHaveBeenCalledOnce())
     expect(service.allowsViewCapabilityInput(capability)).toBe(false)
     finishNavigate()
@@ -381,7 +521,10 @@ describe('ManagedBrowserService ownership boundary', () => {
     const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
     const first = { userId: 7, profile: 'shared' }
     await service.createTab(first, 'https://one.example')
+    runtime.session.listPages = vi.fn(async () => await new Promise<never>(() => undefined))
     await service.closeTab(first, 'page-1')
+
+    expect(runtime.session.listPages).not.toHaveBeenCalled()
 
     await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).resolves.toBeDefined()
     expect(runtime.session.release).toHaveBeenCalledOnce()
@@ -548,6 +691,41 @@ describe('ManagedBrowserService ownership boundary', () => {
     expect((await service.state(first)).tabs).toEqual([])
     expect(runtime.session.release).toHaveBeenCalledOnce()
     await expect(service.createTab({ userId: 8, profile: 'shared' }, 'https://two.example')).resolves.toBeDefined()
+  })
+
+  it('cancels and drains an in-flight page worker before releasing a disappeared page', async () => {
+    const runtime = fakeRuntime()
+    let pages = [{ id: 'page-1', title: 'Example', url: 'https://example.com', loading: false, canGoBack: false, canGoForward: false }]
+    let finishSnapshot!: () => void
+    const order: string[] = []
+    runtime.session.listPages = vi.fn(async () => pages.map(page => ({ ...page })))
+    runtime.session.snapshot = vi.fn(async pageId => {
+      order.push('snapshot-start')
+      await new Promise<void>(resolve => { finishSnapshot = resolve })
+      order.push('snapshot-finish')
+      return { tabId: pageId }
+    })
+    runtime.session.cancelAgentOperation = vi.fn(async () => { order.push('cancel') })
+    runtime.session.release = vi.fn(async () => { order.push('release') })
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'shared' }
+    const tab = await service.createTab(owner, 'https://one.example')
+    const pendingView = await service.issueView(owner, tab.id)
+    const operation = service.agentRequest(owner, 'snapshot', { tab_id: tab.id })
+    await vi.waitFor(() => expect(runtime.session.snapshot).toHaveBeenCalledOnce())
+    pages = []
+
+    const state = service.state(owner)
+    await vi.waitFor(() => expect(runtime.session.cancelAgentOperation).toHaveBeenCalledWith(tab.id))
+    expect(runtime.session.release).not.toHaveBeenCalled()
+    expect(service.allowsViewAccess('7:shared', tab.id)).toBe(false)
+    expect(() => service.resolveView(pendingView.token, owner)).toThrow('not found')
+
+    finishSnapshot()
+    await expect(operation).rejects.toThrow('cancelled by user takeover')
+    await expect(state).resolves.toMatchObject({ tabs: [] })
+    expect(runtime.session.release).toHaveBeenCalledOnce()
+    expect(order).toEqual(['snapshot-start', 'cancel', 'snapshot-finish', 'release'])
   })
 
   it('deduplicates the same owner operation identity and rejects conflicting reuse', async () => {
