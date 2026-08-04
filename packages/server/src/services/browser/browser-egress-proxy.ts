@@ -194,6 +194,7 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
   let optSeen = false
   for (let section = 0; section < sectionCounts.length; section += 1) {
     for (let index = 0; index < sectionCounts[section]; index += 1) {
+      const ownerStart = offset
       const owner = readDnsName(response, offset)
       offset = owner.nextOffset
       if (offset + 10 > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
@@ -206,8 +207,24 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
       if (dataEnd > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
 
       if (type === 41) {
-        if (section !== 2 || owner.name !== '.' || optSeen || (ttl >>> 24) !== 0 || ((ttl >>> 16) & 0xff) !== 0) {
+        if (
+          section !== 2
+          || response[ownerStart] !== 0
+          || owner.nextOffset !== ownerStart + 1
+          || owner.name !== '.'
+          || optSeen
+          || (ttl >>> 24) !== 0
+          || ((ttl >>> 16) & 0xff) !== 0
+          || (ttl & 0x7fff) !== 0
+        ) {
           throw new Error('Browser DNS resolver returned a malformed response')
+        }
+        for (let cursor = dataOffset; cursor < dataEnd;) {
+          if (cursor + 4 > dataEnd) throw new Error('Browser DNS resolver returned a malformed response')
+          const optionLength = view.readUInt16BE(cursor + 2)
+          cursor += 4
+          if (cursor + optionLength > dataEnd) throw new Error('Browser DNS resolver returned a malformed response')
+          cursor += optionLength
         }
         optSeen = true
       } else if (recordClass === 1 && type === 5) {

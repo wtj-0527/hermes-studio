@@ -473,6 +473,48 @@ describe('Studio-managed browser egress proxy', () => {
     }))).rejects.toThrow('DNS resolver')
   })
 
+  it('rejects a compressed-pointer EDNS OPT root owner', async () => {
+    await expect(resolveThroughDoh(query => {
+      const questionRootOffset = query.length - 5
+      return dnsSectionedResponse(query, {
+        answers: dnsQuestionType(query) === 1
+          ? [dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) })]
+          : [],
+        additional: [dnsRecord({
+          owner: Buffer.from([0xc0 | (questionRootOffset >> 8), questionRootOffset & 0xff]),
+          type: 41,
+          recordClass: 4096,
+          ttl: 0,
+          data: new Uint8Array(),
+        })],
+      })
+    })).rejects.toThrow('DNS resolver')
+  })
+
+  it('rejects a truncated EDNS option TLV', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1
+        ? [dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) })]
+        : [],
+      additional: [dnsRecord({
+        owner: dnsName('.'),
+        type: 41,
+        recordClass: 4096,
+        ttl: 0,
+        data: Uint8Array.from([0, 1, 0, 2, 0]),
+      })],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
+  it('rejects reserved EDNS OPT flags', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1
+        ? [dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) })]
+        : [],
+      additional: [dnsRecord({ owner: dnsName('.'), type: 41, recordClass: 4096, ttl: 1, data: new Uint8Array() })],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
   it('rejects malformed A and AAAA record lengths even when another answer is valid', async () => {
     await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
       answers: dnsQuestionType(query) === 1 ? [

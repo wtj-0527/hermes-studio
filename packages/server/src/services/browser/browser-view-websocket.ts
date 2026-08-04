@@ -14,16 +14,28 @@ export function isBrowserViewSocketPath(pathname: string): boolean {
   return VIEW_SOCKET.test(pathname)
 }
 
-export function isAllowedBrowserViewOrigin(request: Pick<IncomingMessage, 'headers' | 'socket'>, configuredOrigin?: string): boolean {
+export function isAllowedBrowserViewOrigin(
+  request: Pick<IncomingMessage, 'headers' | 'socket'>,
+  configuredOrigin?: string,
+  options: { trustProxy?: boolean } = {},
+): boolean {
   const value = request.headers.origin
   if (typeof value !== 'string' || !value || value === 'null' || value.includes(',')) return false
   try {
     const origin = new URL(value).origin
     if (configuredOrigin) return origin === new URL(configuredOrigin).origin
-    const host = request.headers.host
-    if (typeof host !== 'string' || host.includes(',')) return false
-    const encrypted = Boolean((request.socket as { encrypted?: unknown } | undefined)?.encrypted)
-    const requestOrigin = new URL(`${encrypted ? 'https' : 'http'}://${host.trim()}`).origin
+    let host = request.headers.host
+    let protocol = Boolean((request.socket as { encrypted?: unknown } | undefined)?.encrypted) ? 'https' : 'http'
+    if (options.trustProxy) {
+      const forwardedHost = request.headers['x-forwarded-host']
+      const forwardedProto = request.headers['x-forwarded-proto']
+      if (typeof forwardedHost !== 'string' || !forwardedHost || forwardedHost.includes(',')) return false
+      if (typeof forwardedProto !== 'string' || !/^(?:http|https)$/.test(forwardedProto)) return false
+      host = forwardedHost
+      protocol = forwardedProto
+    }
+    if (typeof host !== 'string' || !host || host.includes(',')) return false
+    const requestOrigin = new URL(`${protocol}://${host.trim()}`).origin
     return origin === requestOrigin
   } catch {
     return false
@@ -43,7 +55,7 @@ function decodeViewInput(data: RawData): unknown {
 export function setupBrowserViewWebSocket(
   httpServers: HttpServer | HttpServer[],
   service: ManagedBrowserService,
-  options: { configuredOrigin?: string } = {},
+  options: { configuredOrigin?: string; trustProxy?: boolean } = {},
 ): void {
   const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_VIEW_INPUT_BYTES })
@@ -53,7 +65,11 @@ export function setupBrowserViewWebSocket(
       const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`)
       const match = url.pathname.match(VIEW_SOCKET)
       if (!match) return
-      if (!isAllowedBrowserViewOrigin(request, options.configuredOrigin ?? process.env.HERMES_PUBLIC_ORIGIN)) {
+      if (!isAllowedBrowserViewOrigin(
+        request,
+        options.configuredOrigin ?? process.env.HERMES_PUBLIC_ORIGIN,
+        { trustProxy: options.trustProxy ?? process.env.HERMES_TRUST_PROXY === 'true' },
+      )) {
         socket.destroy()
         return
       }

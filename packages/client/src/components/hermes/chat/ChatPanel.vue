@@ -39,6 +39,7 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
+import { startCapturedPointerDrag } from "@/utils/pointer-drag";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
@@ -111,6 +112,7 @@ const TOOL_PANEL_DEFAULT_WIDTH = 560;
 const TOOL_PANEL_STORAGE_KEY = "hermes.chat.toolPanelWidth";
 const toolPanelWidth = ref(loadToolPanelWidth());
 const toolResizeStart = ref<{ x: number; width: number; deltaSign: 1 | -1 } | null>(null);
+let stopCapturedToolResize: (() => void) | null = null;
 
 const currentMode = ref<"chat" | "live">("chat");
 
@@ -209,11 +211,10 @@ function handleToolResizeMove(event: PointerEvent) {
   toolPanelWidth.value = clampToolPanelWidth(start.width + delta);
 }
 
-function stopToolResize() {
+function finishToolResize() {
   if (!toolResizeStart.value) return;
   toolResizeStart.value = null;
-  window.removeEventListener("pointermove", handleToolResizeMove);
-  window.removeEventListener("pointerup", stopToolResize);
+  stopCapturedToolResize = null;
   if (!isMobile.value) {
     window.localStorage.setItem(TOOL_PANEL_STORAGE_KEY, String(toolPanelWidth.value));
   }
@@ -221,16 +222,27 @@ function stopToolResize() {
   document.body.style.cursor = "";
 }
 
+function stopToolResize() {
+  if (stopCapturedToolResize) {
+    stopCapturedToolResize();
+    return;
+  }
+  finishToolResize();
+}
+
 function startToolResize(event: PointerEvent) {
   if (isMobile.value) return;
   event.preventDefault();
+  stopToolResize();
   toolResizeStart.value = {
     x: event.clientX,
     width: toolPanelWidth.value,
     deltaSign: document.documentElement.dir === "rtl" ? 1 : -1,
   };
-  window.addEventListener("pointermove", handleToolResizeMove);
-  window.addEventListener("pointerup", stopToolResize);
+  stopCapturedToolResize = startCapturedPointerDrag(event, {
+    onMove: handleToolResizeMove,
+    onStop: finishToolResize,
+  });
   document.body.style.userSelect = "none";
   document.body.style.cursor = "col-resize";
 }

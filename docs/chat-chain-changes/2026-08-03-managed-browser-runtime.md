@@ -1,6 +1,6 @@
 ---
 date: 2026-08-03
-pr: pending
+pr: 23
 feature: Provider-neutral managed Browser Runtime
 impact: BrowserPanel, Agent browser tools, and Desktop browser controls share one provider-neutral control plane. Web can use a private Remote Session API plus CDP without exposing runtime endpoints or credentials to the client.
 ---

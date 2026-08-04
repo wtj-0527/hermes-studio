@@ -36,9 +36,52 @@ describe('Browser live-view WebSocket origin boundary', () => {
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'other.example' } } as any)).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'null', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: {} } as any)).toBe(false)
-    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://attacker.example', host: 'studio.example', 'x-forwarded-proto': 'https' } } as any)).toBe(false)
+    expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://studio.example', host: 'studio.example', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'studio.example' }, socket: { encrypted: false } } as any)).toBe(false)
+    expect(isAllowedBrowserViewOrigin(
+      { headers: { origin: 'https://studio.example', host: 'studio.example', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'studio.example' }, socket: { encrypted: false } } as any,
+      undefined,
+      { trustProxy: true },
+    )).toBe(true)
+    expect(isAllowedBrowserViewOrigin(
+      { headers: { origin: 'https://attacker.example', host: 'studio.example', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'studio.example' }, socket: { encrypted: false } } as any,
+      undefined,
+      { trustProxy: true },
+    )).toBe(false)
+    expect(isAllowedBrowserViewOrigin(
+      { headers: { origin: 'https://studio.example', host: 'studio.example', 'x-forwarded-proto': 'https,http', 'x-forwarded-host': 'studio.example' }, socket: { encrypted: false } } as any,
+      undefined,
+      { trustProxy: true },
+    )).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'https://evil.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
     expect(isAllowedBrowserViewOrigin({ headers: { origin: 'http://studio.example', host: 'studio.example' } } as any, 'https://studio.example')).toBe(false)
+  })
+
+  it('accepts a same-origin upgrade through an explicitly trusted TLS-terminating proxy', async () => {
+    const consume = vi.fn(() => ({
+      ownerKey: '7:work', pageId: 'page-1',
+      openView: async () => ({ dispatch: async () => undefined, close: async () => undefined }),
+    }))
+    const service = {
+      consumeViewCapabilityWebSocket: consume,
+      attachViewConnection: vi.fn(() => () => undefined),
+      allowsViewCapabilityInput: vi.fn(() => false),
+      allowsViewCapabilityAccess: vi.fn(() => true),
+    }
+    const studioServer = createServer()
+    setupBrowserViewWebSocket(studioServer, service as any, { trustProxy: true })
+    const studioPort = await listen(studioServer)
+    const client = new WebSocket(`ws://127.0.0.1:${studioPort}/api/browser/view/${'d'.repeat(32)}/socket`, {
+      origin: 'https://studio.example',
+      headers: {
+        host: 'studio.example',
+        'x-forwarded-host': 'studio.example',
+        'x-forwarded-proto': 'https',
+      },
+    })
+
+    await new Promise<void>((resolve, reject) => { client.once('open', resolve); client.once('error', reject) })
+    expect(consume).toHaveBeenCalledOnce()
+    client.close()
   })
 
   it('bridges one exact-origin capability to a Studio-owned CDP view and revokes it', async () => {

@@ -300,7 +300,13 @@ export class ManagedBrowserService {
   }
 
   async setViewport(owner: BrowserOwner, visible: boolean): Promise<PortableBrowserState> {
-    const runtime = this.requireOwner(owner)
+    if (!this.configured()) return this.emptyState(owner.profile)
+    const key = ownerKey(owner)
+    if (this.runtimeOwnerKey && this.runtimeOwnerKey !== key) {
+      throw new Error('Managed Browser runtime is already assigned to another authenticated user')
+    }
+    const runtime = this.owners.get(key)
+    if (!runtime) return this.emptyState(owner.profile, true)
     runtime.visible = visible
     return await this.stateForRuntime(runtime)
   }

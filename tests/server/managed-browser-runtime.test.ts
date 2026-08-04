@@ -62,6 +62,21 @@ describe('ManagedBrowserService ownership boundary', () => {
     expect(service.configured()).toBe(true)
   })
 
+  it('accepts viewport synchronization before a Browser Session exists without acquiring the Runtime', async () => {
+    const runtime = fakeRuntime()
+    runtime.startSession = vi.fn(runtime.startSession)
+    const service = new ManagedBrowserService({ runtime, env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
+    const owner = { userId: 7, profile: 'work' }
+
+    await expect(service.setViewport(owner, true)).resolves.toMatchObject({
+      available: true,
+      activeProfileId: 'work',
+      tabs: [],
+      visible: false,
+    })
+    expect(runtime.startSession).not.toHaveBeenCalled()
+  })
+
   it('binds tabs and view tokens to the authenticated user and profile without exposing runtime URLs', async () => {
     const service = new ManagedBrowserService({ runtime: fakeRuntime(), env: { HERMES_BROWSER_RUNTIME_URL: 'http://127.0.0.1:3000' } })
     const owner = { userId: 7, profile: 'work' }
