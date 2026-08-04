@@ -217,16 +217,16 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
           if (cnameByOwner.has(owner.name)) throw new Error('Browser DNS resolver returned a malformed response')
           cnameByOwner.set(owner.name, target.name)
         }
-      } else if (recordClass === 1 && type === 1) {
+      } else if (type === 1) {
         if (dataLength !== 4) throw new Error('Browser DNS resolver returned a malformed response')
-        if (section === 0) {
+        if (recordClass === 1 && section === 0) {
           const address = [...response.subarray(dataOffset, dataEnd)].join('.')
           if (!isPublicBrowserAddress(address)) throw new Error('Private browser destination is not allowed')
           addressRecords.push({ owner: owner.name, address: { address, family: 4 } })
         }
-      } else if (recordClass === 1 && type === 28) {
+      } else if (type === 28) {
         if (dataLength !== 16) throw new Error('Browser DNS resolver returned a malformed response')
-        if (section === 0) {
+        if (recordClass === 1 && section === 0) {
           const groups: string[] = []
           for (let cursor = dataOffset; cursor < dataEnd; cursor += 2) groups.push(view.readUInt16BE(cursor).toString(16))
           const address = groups.join(':')

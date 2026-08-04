@@ -482,6 +482,17 @@ describe('Studio-managed browser egress proxy', () => {
     }))).rejects.toThrow('DNS resolver')
   })
 
+  it('rejects malformed A and AAAA record lengths even for non-IN classes', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1 ? [
+        dnsRecord({ type: 1, recordClass: 3, data: Uint8Array.from([104, 20, 23, 154, 0]) }),
+        dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }),
+      ] : [
+        dnsRecord({ type: 28, recordClass: 3, data: new Uint8Array(15) }),
+      ],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
   it('rejects forward DNS compression pointers', async () => {
     await expect(resolveThroughDoh(query => {
       if (dnsQuestionType(query) !== 1) return dnsResponse(query)
