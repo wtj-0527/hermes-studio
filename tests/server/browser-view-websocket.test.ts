@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http'
+import { connect } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { isAllowedBrowserViewOrigin, setupBrowserViewWebSocket, shouldSendBrowserViewFrame } from '../../packages/server/src/services/browser/browser-view-websocket'
@@ -22,6 +23,27 @@ async function expectUpgradeRejected(url: string, origin?: string): Promise<void
     const socket = new WebSocket(url, origin ? { origin } : undefined)
     socket.once('open', () => { socket.close(); reject(new Error('unexpected websocket upgrade')) })
     socket.once('error', () => resolve())
+  })
+}
+
+async function sendRawUpgrade(port: number, hostHeader?: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1')
+    socket.once('error', reject)
+    socket.once('close', () => resolve())
+    socket.once('connect', () => {
+      socket.write([
+        `GET /api/browser/view/${'e'.repeat(32)}/socket HTTP/1.1`,
+        ...(hostHeader === undefined ? [] : [`Host: ${hostHeader}`]),
+        'Origin: https://studio.example',
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13',
+        'Sec-WebSocket-Key: ZG9lc250LW1hdHRlcg==',
+        '',
+        '',
+      ].join('\r\n'))
+    })
   })
 }
 
@@ -170,5 +192,20 @@ describe('Browser live-view WebSocket origin boundary', () => {
     await expectUpgradeRejected(url, 'null')
     await expectUpgradeRejected(url, 'https://attacker.example')
     expect(consume).not.toHaveBeenCalled()
+  })
+
+  it('fails closed on malformed or missing Host without consuming capability or stopping HTTP', async () => {
+    const consume = vi.fn()
+    const studioServer = createServer((_request, response) => { response.end('healthy') })
+    setupBrowserViewWebSocket(studioServer, { consumeViewCapabilityWebSocket: consume } as any, { configuredOrigin: 'https://studio.example' })
+    const studioPort = await listen(studioServer)
+
+    await sendRawUpgrade(studioPort, '%')
+    await sendRawUpgrade(studioPort)
+
+    expect(consume).not.toHaveBeenCalled()
+    const response = await fetch(`http://127.0.0.1:${studioPort}`)
+    expect(response.status).toBe(200)
+    await expect(response.text()).resolves.toBe('healthy')
   })
 })

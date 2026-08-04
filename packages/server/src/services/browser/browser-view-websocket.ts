@@ -62,7 +62,15 @@ export function setupBrowserViewWebSocket(
 
   for (const httpServer of servers) {
     httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
-      const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`)
+      let url: URL
+      try {
+        const host = request.headers.host
+        if (typeof host !== 'string' || !host.trim() || host.includes(',')) throw new Error('Invalid WebSocket Host')
+        url = new URL(request.url || '', `http://${host.trim()}`)
+      } catch {
+        socket.destroy()
+        return
+      }
       const match = url.pathname.match(VIEW_SOCKET)
       if (!match) return
       if (!isAllowedBrowserViewOrigin(
