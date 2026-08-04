@@ -38,7 +38,10 @@ import {
   runtimeManifestMatchesHermesAgentVersion,
 } from './runtime-version'
 import { extractTarGzipArchive } from './runtime-archive'
-import { repairMovedHermesRuntime } from './runtime-relocation'
+import {
+  repairMovedHermesRuntime,
+  windowsRuntimeNeedsRelocationRepair,
+} from './runtime-relocation'
 import { t } from './desktop-i18n'
 
 const DEFAULT_RUNTIME_BASE_URL = 'https://download.ekkolearnai.com'
@@ -88,6 +91,7 @@ type ActiveRuntimeVersion = {
   runtimeRootDirectory?: string
   pendingRuntimeRootDirectory?: string
   runtimeMigrationError?: string
+  runtimeActivationError?: string
   webUiDirectory?: string
   platform?: string
   updatedAt?: string
@@ -223,14 +227,47 @@ function runtimeReady(): boolean {
 function rootRuntimeReady(root: string): boolean {
   const pythonRoot = runtimePythonEnvironmentRoot(root)
   const gitPath = process.platform === 'win32' ? join(root, 'git', 'cmd', 'git.exe') : null
+  const hermesPath = process.platform === 'win32'
+    ? [
+        join(pythonRoot, 'Scripts', 'hermes.cmd'),
+        join(pythonRoot, 'Scripts', 'hermes.exe'),
+      ].find(existsSync)
+    : join(pythonRoot, 'bin', 'hermes')
   return existsSync(runtimePythonExecutable(pythonRoot))
-    && existsSync(process.platform === 'win32' ? join(pythonRoot, 'Scripts', 'hermes.cmd') : join(pythonRoot, 'bin', 'hermes'))
+    && Boolean(hermesPath)
     && existsSync(process.platform === 'win32' ? join(root, 'node', 'node.exe') : join(root, 'node', 'bin', 'node'))
     && (!gitPath || existsSync(gitPath))
 }
 
 export function isDesktopRuntimeReady(): boolean {
   return runtimeReady()
+}
+
+export function repairUpdatedDesktopRuntimeLaunchers(): boolean {
+  if (process.platform !== 'win32') return false
+
+  const runtimeRoot = desktopRuntimeDir()
+  if (!windowsRuntimeNeedsRelocationRepair(runtimeRoot)) return false
+
+  try {
+    const repair = repairMovedHermesRuntime(runtimeRoot, runtimeRoot, runtimeRoot)
+    const repaired = !windowsRuntimeNeedsRelocationRepair(runtimeRoot)
+      && (repair.editableFilesRewritten > 0 || repair.launchersRewritten > 0)
+    if (repaired) {
+      console.log(
+        `[runtime] repaired cached Windows Runtime: `
+        + `${repair.editableFilesRewritten} path reference(s), `
+        + `${repair.launchersRewritten} launcher(s)`,
+      )
+    }
+    return repaired
+  } catch (err) {
+    console.warn(
+      `[runtime] failed to repair cached Windows Runtime: `
+      + `${err instanceof Error ? err.message : String(err)}`,
+    )
+    return false
+  }
 }
 
 function releaseTagCandidates(): string[] {
@@ -398,6 +435,18 @@ function writeActiveRuntimeManifest(active: ActiveRuntimeVersion): void {
   writeFileSync(file, JSON.stringify(active, null, 2) + '\n')
 }
 
+async function copyTreeForMigration(source: string, destination: string): Promise<void> {
+  // Hermes/uv can add directory symlinks after an update. Recreating them
+  // requires elevated Windows privileges, so make the migrated copy self-contained.
+  const materializeLinks = process.platform === 'win32'
+  await copyAsync(source, destination, {
+    recursive: true,
+    force: true,
+    dereference: materializeLinks,
+    verbatimSymlinks: !materializeLinks,
+  })
+}
+
 export async function migratePendingRuntimeRoot(
   onProgress?: RuntimeProgressHandler,
 ): Promise<{ migrated: boolean; error: string }> {
@@ -477,7 +526,7 @@ export async function migratePendingRuntimeRoot(
     if (shouldCopyRuntime) {
       await mkdirAsync(dirname(targetRuntime), { recursive: true })
       await removeAsync(tempRuntime, { recursive: true, force: true })
-      await copyAsync(sourceRuntime, tempRuntime, { recursive: true, force: true, verbatimSymlinks: true })
+      await copyTreeForMigration(sourceRuntime, tempRuntime)
       const relocation = repairMovedHermesRuntime(tempRuntime, sourceRuntime, targetRuntime)
       if (relocation.editableFilesRewritten || relocation.launchersRewritten) {
         console.log(
@@ -494,11 +543,7 @@ export async function migratePendingRuntimeRoot(
       await mkdirAsync(tempWebUiRoot, { recursive: true })
       for (const webUiVersion of webUiVersionsToCopy) {
         const stagedVersion = join(tempWebUiRoot, webUiVersion)
-        await copyAsync(join(sourceWebUiRoot, webUiVersion), stagedVersion, {
-          recursive: true,
-          force: true,
-          verbatimSymlinks: true,
-        })
+        await copyTreeForMigration(join(sourceWebUiRoot, webUiVersion), stagedVersion)
         validateWebUiVersion(stagedVersion, webUiVersion)
       }
       validateWebUiVersions(tempWebUiRoot)
@@ -560,7 +605,10 @@ export async function migratePendingRuntimeRoot(
   }
 }
 
-export function writeActiveRuntimeVersion(runtimeRoot = desktopRuntimeDir()): void {
+export function writeActiveRuntimeVersion(
+  runtimeRoot = desktopRuntimeDir(),
+  options: { clearRuntimeActivationError?: boolean } = {},
+): void {
   const manifest = readCachedRuntimeManifest(runtimeRoot)
   const hermesRuntimeVersion = manifest?.hermesAgentVersion || desktopRuntimeVersion()
   const selectedWebUiDirectory = webuiDir()
@@ -604,6 +652,7 @@ export function writeActiveRuntimeVersion(runtimeRoot = desktopRuntimeDir()): vo
     delete next.webUiVersion
   }
   delete next.webUiDirectory
+  if (options.clearRuntimeActivationError) delete next.runtimeActivationError
   writeActiveRuntimeManifest(next)
 }
 
@@ -749,6 +798,6 @@ export async function ensureDesktopRuntime(
     }, null, 2))
   }
   onProgress?.({ stage: 'ready', message: t('runtime.ready') })
-  writeActiveRuntimeVersion(runtimeRoot)
+  writeActiveRuntimeVersion(runtimeRoot, { clearRuntimeActivationError: true })
   console.log(`[runtime] Hermes runtime ready at ${runtimeRoot}`)
 }

@@ -8,7 +8,7 @@ import { getTerminalConfig, type TerminalConfig } from '../../services/hermes/fi
 import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
 import { logger } from '../../services/logger'
 import { config } from '../../config'
-import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
+import { parseUpgradeRequestUrl, shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
 
 let pty: any = null
 
@@ -151,7 +151,11 @@ export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
 
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', async (req, socket, head) => {
-      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      const url = parseUpgradeRequestUrl(req)
+      if (!url) {
+        socket.destroy()
+        return
+      }
       if (url.pathname !== '/api/hermes/terminal') {
         return
       }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const { readFileSync } = process.getBuiltinModule('node:fs') as typeof import('node:fs')
 
 afterEach(() => {
   delete (window as typeof window & { hermesDesktop?: unknown }).hermesDesktop
@@ -46,19 +47,31 @@ describe('desktop browser chat panel gate', () => {
   it('separates the pure browser panel from the settings-only page', () => {
     const chatPanel = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
     const groupChatPanel = readFileSync('packages/client/src/components/hermes/group-chat/GroupChatPanel.vue', 'utf8')
-    const browserPanel = readFileSync('packages/client/src/components/hermes/chat/DesktopBrowserPanel.vue', 'utf8')
+    const browserPanel = readFileSync('packages/client/src/components/hermes/chat/BrowserPanel.vue', 'utf8')
+    const browserProvider = readFileSync('packages/client/src/browser/provider.ts', 'utf8')
     const settingsPage = readFileSync('packages/client/src/views/hermes/DesktopBrowserView.vue', 'utf8')
     const sidebar = readFileSync('packages/client/src/components/layout/AppSidebar.vue', 'utf8')
-    expect(chatPanel).toContain("const DesktopBrowserPanel = defineAsyncComponent")
+    expect(chatPanel).toContain("const BrowserPanel = defineAsyncComponent")
     expect(chatPanel).toContain('v-if="desktopBrowserAvailable"')
     expect(chatPanel).toContain("activeToolPanel === 'browser'")
     expect(chatPanel).toContain('@attach="handleBrowserAttachment"')
     expect(chatPanel).toContain('OPEN_DESKTOP_BROWSER_PANEL_EVENT')
     expect(groupChatPanel).toContain("activeWorkspacePanel = ref<'files' | 'terminal' | 'browser'>('files')")
     expect(groupChatPanel).toContain('OPEN_DESKTOP_BROWSER_PANEL_EVENT')
-    expect(groupChatPanel).toContain('const DesktopBrowserPanel = defineAsyncComponent')
+    expect(groupChatPanel).toContain('const BrowserPanel = defineAsyncComponent')
     expect(groupChatPanel).toContain("activeWorkspacePanel === 'browser'")
     expect(browserPanel).toContain('onAnnotationRequest')
+    expect(browserPanel).toContain(':src="webViewUrl"')
+    expect(browserProvider).toContain("return result.url")
+    expect(browserProvider).not.toContain('URL.createObjectURL(new Blob')
+    expect(browserPanel).toContain('data-testid="browser-provider-switcher"')
+    expect(browserPanel).toContain('await selectBrowserProvider(providerId, { syncLocalSelection: false })')
+    expect(browserPanel).toContain('return previous.setViewport({ x: 0, y: 0, width: 1, height: 1 }, false)')
+    expect(browserPanel).toContain('stopStateListener?.()')
+    expect(browserPanel).toContain('bridge.revokeViewUrl?.(webViewUrl.value)')
+    expect(browserPanel).toContain("'input-locked': activeTab?.agentControl !== 'idle'")
+    expect(browserPanel).toContain('!state.available')
+    expect(browserPanel).toContain('browser.unavailable')
     expect(browserPanel).toContain('EXTERNAL_OVERLAY_SELECTOR')
     expect(browserPanel).toContain("'.n-modal-body-wrapper'")
     expect(browserPanel).toContain("'.n-drawer-mask'")
@@ -68,6 +81,9 @@ describe('desktop browser chat panel gate', () => {
     expect(browserPanel).toContain('class="annotation-editor"')
     expect(browserPanel).toContain('class="annotation-popover"')
     expect(browserPanel).toContain('class="annotation-note-input"')
+    expect(browserPanel).toContain('activeCapabilities?.profiles !== false')
+    expect(browserPanel).toContain('activeCapabilities?.downloads !== false')
+    expect(browserPanel).toContain('activeCapabilities.value?.annotations === false')
     expect(browserPanel).toContain('data-testid="browser-profile-switcher"')
     expect(browserPanel).toContain('class="download-popover"')
     expect(browserPanel).toContain('cancelDownload(item.id)')

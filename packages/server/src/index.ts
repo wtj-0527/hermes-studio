@@ -32,9 +32,11 @@ import { logger } from './services/logger'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { getStaticCacheControl, SPA_ENTRY_CACHE_CONTROL } from './middleware/static-cache'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
-import { createCorsOriginResolver, securityHeaders } from './security'
+import { createCorsOriginResolver, parseUpgradeRequestUrl, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
 import { createRequestBodyParser } from './middleware/request-body-parser'
+import { setupBrowserViewWebSocket, isBrowserViewSocketPath } from './services/browser/browser-view-websocket'
+import { managedBrowserService } from './services/browser'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -330,6 +332,7 @@ export async function bootstrap() {
 
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
+  setupBrowserViewWebSocket(servers, managedBrowserService)
   getLanPeerSocketManager().setupServer(servers)
   console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
 
@@ -372,9 +375,14 @@ export async function bootstrap() {
   // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', (req: any, socket: any) => {
-      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      const url = parseUpgradeRequestUrl(req)
+      if (!url) {
+        socket.destroy()
+        return
+      }
       if (url.pathname !== '/api/hermes/terminal' &&
         url.pathname !== '/api/hermes/kanban/events' &&
+        !isBrowserViewSocketPath(url.pathname) &&
         url.pathname !== getLanPeerSocketPath() &&
         !url.pathname.startsWith('/socket.io/')) {
         socket.destroy()

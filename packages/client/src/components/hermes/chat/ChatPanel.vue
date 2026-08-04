@@ -39,6 +39,7 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
+import { startCapturedPointerDrag } from "@/utils/pointer-drag";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
@@ -55,7 +56,8 @@ import { isStoredSuperAdmin } from "@/api/client";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
 import { canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
 import { OPEN_SUBAGENT_STREAM_EVENT, type OpenSubagentStreamDetail } from "@/utils/hermes/subagent-stream";
-import { desktopBridge, hasDesktopBrowserBridge } from "@/utils/desktop-bridge";
+import { desktopBridge } from "@/utils/desktop-bridge";
+import { hasBrowserProvider } from "@/browser/provider";
 import { OPEN_DESKTOP_BROWSER_PANEL_EVENT } from "@/utils/desktop-browser";
 
 const props = withDefaults(defineProps<{
@@ -67,7 +69,7 @@ const props = withDefaults(defineProps<{
 const FilesPanel = defineAsyncComponent(async () => (await import('./FilesPanel.vue')).default);
 const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default);
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default);
-const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('./DesktopBrowserPanel.vue')).default);
+const BrowserPanel = defineAsyncComponent(async () => (await import('./BrowserPanel.vue')).default);
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
@@ -94,7 +96,7 @@ const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal" | "browser">("files");
-const desktopBrowserAvailable = hasDesktopBrowserBridge();
+const desktopBrowserAvailable = hasBrowserProvider();
 const desktopChatWindowAvailable = desktopBridge()?.isDesktop === true
   && typeof desktopBridge()?.openChatWindow === "function";
 const selectedSubagent = ref<OpenSubagentStreamDetail | null>(null);
@@ -110,6 +112,7 @@ const TOOL_PANEL_DEFAULT_WIDTH = 560;
 const TOOL_PANEL_STORAGE_KEY = "hermes.chat.toolPanelWidth";
 const toolPanelWidth = ref(loadToolPanelWidth());
 const toolResizeStart = ref<{ x: number; width: number; deltaSign: 1 | -1 } | null>(null);
+let stopCapturedToolResize: (() => void) | null = null;
 
 const currentMode = ref<"chat" | "live">("chat");
 
@@ -208,11 +211,10 @@ function handleToolResizeMove(event: PointerEvent) {
   toolPanelWidth.value = clampToolPanelWidth(start.width + delta);
 }
 
-function stopToolResize() {
+function finishToolResize() {
   if (!toolResizeStart.value) return;
   toolResizeStart.value = null;
-  window.removeEventListener("pointermove", handleToolResizeMove);
-  window.removeEventListener("pointerup", stopToolResize);
+  stopCapturedToolResize = null;
   if (!isMobile.value) {
     window.localStorage.setItem(TOOL_PANEL_STORAGE_KEY, String(toolPanelWidth.value));
   }
@@ -220,16 +222,27 @@ function stopToolResize() {
   document.body.style.cursor = "";
 }
 
+function stopToolResize() {
+  if (stopCapturedToolResize) {
+    stopCapturedToolResize();
+    return;
+  }
+  finishToolResize();
+}
+
 function startToolResize(event: PointerEvent) {
   if (isMobile.value) return;
   event.preventDefault();
+  stopToolResize();
   toolResizeStart.value = {
     x: event.clientX,
     width: toolPanelWidth.value,
     deltaSign: document.documentElement.dir === "rtl" ? 1 : -1,
   };
-  window.addEventListener("pointermove", handleToolResizeMove);
-  window.addEventListener("pointerup", stopToolResize);
+  stopCapturedToolResize = startCapturedPointerDrag(event, {
+    onMove: handleToolResizeMove,
+    onStop: finishToolResize,
+  });
   document.body.style.userSelect = "none";
   document.body.style.cursor = "col-resize";
 }
@@ -2752,7 +2765,7 @@ async function handleSessionModelCustomSubmit() {
                     v-show="activeToolPanel === 'terminal'"
                     :visible="showToolPanel && activeToolPanel === 'terminal'"
                   />
-                  <DesktopBrowserPanel
+                  <BrowserPanel
                     v-if="desktopBrowserAvailable && activeToolPanel === 'browser'"
                     @attach="handleBrowserAttachment"
                   />

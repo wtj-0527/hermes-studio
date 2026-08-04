@@ -18,7 +18,7 @@ import type { Attachment } from '@/stores/hermes/chat'
 import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
-import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
+import { hasBrowserProvider } from '@/browser/provider'
 import { OPEN_DESKTOP_BROWSER_PANEL_EVENT } from '@/utils/desktop-browser'
 import { canScopedCodingAgentUseProvider } from '@/utils/codingAgentProviders'
 import {
@@ -36,7 +36,7 @@ import {
 const FilesPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/FilesPanel.vue')).default)
 const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default)
 const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default)
-const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/DesktopBrowserPanel.vue')).default)
+const BrowserPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/BrowserPanel.vue')).default)
 const TerminalPanel = defineAsyncComponent(async () => (await import('@/components/hermes/chat/TerminalPanel.vue')).default)
 
 const { t } = useI18n()
@@ -117,7 +117,7 @@ const groupChatSurfaceRef = ref<HTMLElement | null>(null)
 let roomFadeAnimation: Animation | null = null
 const showWorkspacePanel = ref(false)
 const activeWorkspacePanel = ref<'files' | 'terminal' | 'browser'>('files')
-const desktopBrowserAvailable = hasDesktopBrowserBridge()
+const desktopBrowserAvailable = hasBrowserProvider()
 const workspacePanelMobile = ref(window.innerWidth <= 768)
 const GROUP_CHAT_REFACTOR_NOTICE_STORAGE_KEY = 'hermes.groupChat.refactorNotice.v1.acknowledged'
 const WORKSPACE_PANEL_MIN_WIDTH = 360
@@ -1612,6 +1612,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                 >
                     <div class="group-workspace-resize-handle" @pointerdown="startWorkspaceResize" />
                     <div class="group-workspace-panel-inner">
+
                         <WorkspaceDiffPreview
                             v-if="toolPanelStore.workspaceDiff"
                             :custom-close="closeWorkspacePanel"
@@ -1693,7 +1694,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                     class="group-terminal-panel"
                                     :visible="showWorkspacePanel && activeWorkspacePanel === 'terminal'"
                                 />
-                                <DesktopBrowserPanel
+                                <BrowserPanel
                                     v-if="desktopBrowserAvailable && activeWorkspacePanel === 'browser'"
                                     class="group-browser-panel"
                                     @attach="handleBrowserAttachment"

@@ -148,7 +148,7 @@ const HERMES_STUDIO_SPLIT_MCP_TOOLS = new Map([
   ]],
   ['mcp__hermes_studio_browser', [categoryToolset(
     'hermes_studio_browser_toolset',
-    'Discover and invoke Hermes Studio Desktop browser operations. Covers tabs and leases, navigation, accessibility snapshots, interaction, screenshots, and console logs.',
+    'Discover and invoke Hermes Studio browser operations through ElectronBrowserProvider on Desktop or ManagedBrowserProvider on Web. Covers tabs and leases, navigation, accessibility snapshots, interaction, screenshots, and console logs.',
   )]],
   ['mcp__hermes_studio_devices', [categoryToolset(
     'hermes_studio_devices_toolset',

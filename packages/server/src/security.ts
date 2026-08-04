@@ -80,6 +80,16 @@ export function createSocketIoCorsOrigin(corsOrigins = '') {
   }
 }
 
+export function parseUpgradeRequestUrl(req: Pick<IncomingMessage, 'headers' | 'url'>): URL | null {
+  const host = req.headers.host
+  if (typeof host !== 'string' || !host.trim() || host.includes(',')) return null
+  try {
+    return new URL(req.url || '', `http://${host.trim()}`)
+  } catch {
+    return null
+  }
+}
+
 export function shouldRejectUpgradeOrigin(req: IncomingMessage, corsOrigins = ''): boolean {
   const origin = req.headers.origin
   if (!origin) return false
