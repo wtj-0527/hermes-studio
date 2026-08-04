@@ -2,9 +2,50 @@ import { request } from 'node:http'
 import { connect } from 'node:net'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BrowserEgressProxy, createConnectTunnel, isPublicBrowserAddress } from '../../packages/server/src/services/browser/browser-egress-proxy'
+import { BrowserEgressProxy, createConnectTunnel, isPublicBrowserAddress, parseBrowserDohBootstrapAddresses } from '../../packages/server/src/services/browser/browser-egress-proxy'
 
 const proxies: BrowserEgressProxy[] = []
+
+function dnsQuestionType(query: Uint8Array): number {
+  return (query[query.length - 4] << 8) | query[query.length - 3]
+}
+
+function dnsResponse(
+  query: Uint8Array,
+  answers: Array<{ type: 1 | 28; data: Uint8Array }> = [],
+  options: { question?: Uint8Array; flags?: number } = {},
+): Uint8Array {
+  const question = options.question || query.slice(12)
+  const answerBytes = answers.map(answer => {
+    const record = Buffer.alloc(12 + answer.data.length)
+    record.writeUInt16BE(0xc00c, 0)
+    record.writeUInt16BE(answer.type, 2)
+    record.writeUInt16BE(1, 4)
+    record.writeUInt32BE(60, 6)
+    record.writeUInt16BE(answer.data.length, 10)
+    Buffer.from(answer.data).copy(record, 12)
+    return record
+  })
+  const header = Buffer.alloc(12)
+  header.writeUInt16BE((query[0] << 8) | query[1], 0)
+  header.writeUInt16BE(options.flags ?? 0x8180, 2)
+  header.writeUInt16BE(1, 4)
+  header.writeUInt16BE(answers.length, 6)
+  return Buffer.concat([header, Buffer.from(question), ...answerBytes])
+}
+
+function dnsResponseWithRootOpt(
+  query: Uint8Array,
+  answers: Array<{ type: 1 | 28; data: Uint8Array }> = [],
+): Uint8Array {
+  const response = Buffer.from(dnsResponse(query, answers))
+  response.writeUInt16BE(1, 10)
+  const opt = Buffer.alloc(11)
+  opt[0] = 0
+  opt.writeUInt16BE(41, 1)
+  opt.writeUInt16BE(4096, 3)
+  return Buffer.concat([response, opt])
+}
 
 afterEach(async () => {
   await Promise.all(proxies.splice(0).map(proxy => proxy.close()))
@@ -142,6 +183,175 @@ describe('Studio-managed browser egress proxy', () => {
 
   it.each(['1.1.1.1', '8.8.8.8', '2606:4700:4700::1111'])('accepts public address %s', address => {
     expect(isPublicBrowserAddress(address)).toBe(true)
+  })
+
+  it('uses an explicit public bootstrap IP and RFC 8484 wire queries when system DNS returns Fake-IP answers', async () => {
+    const requests: Array<{ resolver: URL; bootstrapAddress: { address: string; family: number }; query: Uint8Array }> = []
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [
+        { address: '198.19.0.35', family: 4 },
+        { address: '2001:480:abcd::22', family: 6 },
+      ],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async request => {
+        requests.push(request)
+        const type = dnsQuestionType(request.query)
+        const answers = type === 1
+          ? [{ type: 1 as const, data: Uint8Array.from([104, 20, 23, 154]) }]
+          : []
+        return {
+          statusCode: 200,
+          contentType: 'application/dns-message',
+          body: dnsResponse(request.query, answers),
+        }
+      },
+    })
+
+    const resolved = await (proxy as unknown as { resolvePublic(hostname: string): Promise<{ address: string; family: number }> }).resolvePublic('example.com')
+
+    expect(resolved).toEqual({ address: '104.20.23.154', family: 4 })
+    expect(requests).toHaveLength(2)
+    expect(requests.every(item => item.resolver.href === 'https://resolver.example/dns-query')).toBe(true)
+    expect(requests.every(item => item.bootstrapAddress.address === '1.1.1.1')).toBe(true)
+    expect(requests.map(item => dnsQuestionType(item.query)).sort((a, b) => a - b)).toEqual([1, 28])
+  })
+
+  it('keeps the HTTPS resolver disabled when system DNS is already public', async () => {
+    let requests = 0
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [{ address: '1.1.1.1', family: 4 }],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async () => { requests += 1; throw new Error('unexpected resolver call') },
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com'))
+      .resolves.toEqual({ address: '1.1.1.1', family: 4 })
+    expect(requests).toBe(0)
+  })
+
+  it('does not use DoH to wash a non-Fake-IP private system answer', async () => {
+    let requests = 0
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [
+        { address: '198.19.0.35', family: 4 },
+        { address: '127.0.0.1', family: 4 },
+      ],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async () => { requests += 1; throw new Error('unexpected resolver call') },
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('rebinding.example'))
+      .rejects.toThrow('Private browser destination')
+    expect(requests).toBe(0)
+  })
+
+  it('accepts a standard wire response with a root-owner OPT additional record', async () => {
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async request => ({
+        statusCode: 200,
+        contentType: 'application/dns-message',
+        body: dnsResponseWithRootOpt(request.query, dnsQuestionType(request.query) === 1
+          ? [{ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }]
+          : []),
+      }),
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com'))
+      .resolves.toEqual({ address: '104.20.23.154', family: 4 })
+  })
+
+  it('fails closed when a wire resolver response contains any private address', async () => {
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async request => ({
+        statusCode: 200,
+        contentType: 'application/dns-message',
+        body: dnsResponse(request.query, dnsQuestionType(request.query) === 1 ? [
+          { type: 1, data: Uint8Array.from([104, 20, 23, 154]) },
+          { type: 1, data: Uint8Array.from([127, 0, 0, 1]) },
+        ] : []),
+      }),
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('rebinding.example'))
+      .rejects.toThrow('Private browser destination')
+  })
+
+  it('fails closed on a mismatched DNS question', async () => {
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async request => {
+        const wrongQuestion = request.query.slice(12)
+        wrongQuestion[1] = wrongQuestion[1] === 101 ? 120 : 101
+        return {
+          statusCode: 200,
+          contentType: 'application/dns-message',
+          body: dnsResponse(request.query, [], { question: wrongQuestion }),
+        }
+      },
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com'))
+      .rejects.toThrow('DNS resolver')
+  })
+
+  it('fails closed when a wire resolver returns an oversized body', async () => {
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+      dohUrl: 'https://resolver.example/dns-query',
+      dohBootstrapAddresses: ['1.1.1.1'],
+      dohRequest: async () => ({
+        statusCode: 200,
+        contentType: 'application/dns-message',
+        body: new Uint8Array(65 * 1024),
+      }),
+    })
+
+    await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com'))
+      .rejects.toThrow('too large')
+  })
+
+  it('fails closed on redirects and non-wire resolver content', async () => {
+    for (const response of [
+      { statusCode: 302, contentType: 'application/dns-message', body: new Uint8Array() },
+      { statusCode: 200, contentType: 'application/json', body: new Uint8Array() },
+    ]) {
+      const proxy = new BrowserEgressProxy({
+        lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+        dohUrl: 'https://resolver.example/dns-query',
+        dohBootstrapAddresses: ['1.1.1.1'],
+        dohRequest: async () => response,
+      })
+      await expect((proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com'))
+        .rejects.toThrow('DNS resolver')
+    }
+  })
+
+  it('parses and deduplicates configured resolver bootstrap IPs', () => {
+    expect(parseBrowserDohBootstrapAddresses(' 1.1.1.1, 2606:4700:4700::1111,1.1.1.1 '))
+      .toEqual(['1.1.1.1', '2606:4700:4700::1111'])
+    expect(parseBrowserDohBootstrapAddresses('')).toEqual([])
+  })
+
+  it.each([
+    { dohUrl: 'http://resolver.example/dns-query', dohBootstrapAddresses: ['1.1.1.1'] },
+    { dohUrl: 'https://user:password@resolver.example/dns-query', dohBootstrapAddresses: ['1.1.1.1'] },
+    { dohUrl: 'https://resolver.example/dns-query#fragment', dohBootstrapAddresses: ['1.1.1.1'] },
+    { dohUrl: 'https://resolver.example/dns-query', dohBootstrapAddresses: [] },
+    { dohBootstrapAddresses: ['1.1.1.1'] },
+    { dohUrl: 'https://resolver.example/dns-query', dohBootstrapAddresses: ['127.0.0.1'] },
+  ])('rejects unsafe or incomplete resolver configuration %#', (options) => {
+    expect(() => new BrowserEgressProxy(options)).toThrow('DNS resolver')
   })
 
   it('requires proxy authentication before resolving a destination', async () => {
