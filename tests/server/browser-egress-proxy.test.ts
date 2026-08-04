@@ -47,6 +47,67 @@ function dnsResponseWithRootOpt(
   return Buffer.concat([response, opt])
 }
 
+function dnsName(name: string): Buffer {
+  if (name === '.') return Buffer.from([0])
+  return Buffer.concat([...name.split('.').map(label => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])
+}
+
+function dnsRecord(options: {
+  owner?: Buffer
+  type: number
+  recordClass?: number
+  ttl?: number
+  data: Uint8Array
+}): Buffer {
+  const owner = options.owner || Buffer.from([0xc0, 0x0c])
+  const record = Buffer.alloc(10 + options.data.length)
+  record.writeUInt16BE(options.type, 0)
+  record.writeUInt16BE(options.recordClass ?? 1, 2)
+  record.writeUInt32BE(options.ttl ?? 60, 4)
+  record.writeUInt16BE(options.data.length, 8)
+  Buffer.from(options.data).copy(record, 10)
+  return Buffer.concat([owner, record])
+}
+
+function dnsSectionedResponse(
+  query: Uint8Array,
+  options: {
+    flags?: number
+    answers?: Buffer[]
+    authority?: Buffer[]
+    additional?: Buffer[]
+    padding?: Buffer
+  } = {},
+): Uint8Array {
+  const answers = options.answers || []
+  const authority = options.authority || []
+  const additional = options.additional || []
+  const header = Buffer.alloc(12)
+  header.writeUInt16BE((query[0] << 8) | query[1], 0)
+  header.writeUInt16BE(options.flags ?? 0x8180, 2)
+  header.writeUInt16BE(1, 4)
+  header.writeUInt16BE(answers.length, 6)
+  header.writeUInt16BE(authority.length, 8)
+  header.writeUInt16BE(additional.length, 10)
+  return Buffer.concat([header, Buffer.from(query.slice(12)), ...answers, ...authority, ...additional, options.padding || Buffer.alloc(0)])
+}
+
+async function resolveThroughDoh(
+  responseFor: (query: Uint8Array) => Uint8Array,
+): Promise<unknown> {
+  const proxy = new BrowserEgressProxy({
+    lookupAll: async () => [{ address: '198.19.0.35', family: 4 }],
+    dohUrl: 'https://resolver.example/dns-query',
+    dohBootstrapAddresses: ['1.1.1.1'],
+    dohRequest: async request => ({
+      statusCode: 200,
+      contentType: 'application/dns-message',
+      body: responseFor(request.query),
+    }),
+  })
+  return await (proxy as unknown as { resolvePublic(hostname: string): Promise<unknown> }).resolvePublic('example.com')
+}
+
 afterEach(async () => {
   await Promise.all(proxies.splice(0).map(proxy => proxy.close()))
 })
@@ -352,6 +413,91 @@ describe('Studio-managed browser egress proxy', () => {
     { dohUrl: 'https://resolver.example/dns-query', dohBootstrapAddresses: ['127.0.0.1'] },
   ])('rejects unsafe or incomplete resolver configuration %#', (options) => {
     expect(() => new BrowserEgressProxy(options)).toThrow('DNS resolver')
+  })
+
+  it('rejects deprecated IPv6 site-local space across direct and DoH resolution', async () => {
+    expect(isPublicBrowserAddress('fec0::1')).toBe(false)
+    const siteLocal = Uint8Array.from([0xfe, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+    await expect(resolveThroughDoh(query => dnsQuestionType(query) === 28
+      ? dnsResponse(query, [{ type: 28, data: siteLocal }])
+      : dnsResponse(query)))
+      .rejects.toThrow('Private browser destination')
+  })
+
+  it('rejects a DNS response whose exact size is 65536 bytes', async () => {
+    await expect(resolveThroughDoh(query => {
+      const valid = dnsResponse(query, dnsQuestionType(query) === 1
+        ? [{ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }]
+        : [])
+      return Buffer.concat([valid, Buffer.alloc(65536 - valid.byteLength)])
+    })).rejects.toThrow('too large')
+  })
+
+  it.each([
+    ['non-query opcode', 0x8980],
+    ['reserved Z bit', 0x81c0],
+  ])('rejects a DNS response with %s', async (_label, flags) => {
+    await expect(resolveThroughDoh(query => dnsResponse(query,
+      dnsQuestionType(query) === 1 ? [{ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }] : [],
+      { flags },
+    ))).rejects.toThrow('DNS resolver')
+  })
+
+  it('rejects an EDNS extended error response', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1
+        ? [dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) })]
+        : [],
+      additional: [dnsRecord({ owner: dnsName('.'), type: 41, recordClass: 4096, ttl: 0x01000000, data: new Uint8Array() })],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
+  it('does not accept a CNAME and address supplied only in Additional', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      additional: dnsQuestionType(query) === 1 ? [
+        dnsRecord({ type: 5, data: dnsName('alias.example') }),
+        dnsRecord({ owner: dnsName('alias.example'), type: 1, data: Uint8Array.from([104, 20, 23, 154]) }),
+      ] : [],
+    }))).rejects.toThrow('Private browser destination')
+  })
+
+  it('rejects a non-root EDNS OPT owner', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1
+        ? [dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) })]
+        : [],
+      additional: [dnsRecord({ type: 41, recordClass: 4096, data: new Uint8Array() })],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
+  it('rejects malformed A and AAAA record lengths even when another answer is valid', async () => {
+    await expect(resolveThroughDoh(query => dnsSectionedResponse(query, {
+      answers: dnsQuestionType(query) === 1 ? [
+        dnsRecord({ type: 1, data: Uint8Array.from([127, 0, 0, 1, 0]) }),
+        dnsRecord({ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }),
+      ] : [dnsRecord({ type: 28, data: new Uint8Array(15) })],
+    }))).rejects.toThrow('DNS resolver')
+  })
+
+  it('rejects forward DNS compression pointers', async () => {
+    await expect(resolveThroughDoh(query => {
+      if (dnsQuestionType(query) !== 1) return dnsResponse(query)
+      const question = Buffer.from(query.slice(12))
+      const header = Buffer.alloc(12)
+      header.writeUInt16BE((query[0] << 8) | query[1], 0)
+      header.writeUInt16BE(0x8180, 2)
+      header.writeUInt16BE(1, 4)
+      header.writeUInt16BE(2, 6)
+      const firstOwnerOffset = 12 + question.length
+      const futureNameOffset = firstOwnerOffset + 2 + 10 + 4 + 2 + 10
+      const pointer = Buffer.from([0xc0 | (futureNameOffset >> 8), futureNameOffset & 0xff])
+      return Buffer.concat([
+        header,
+        question,
+        dnsRecord({ owner: pointer, type: 1, data: Uint8Array.from([104, 20, 23, 154]) }),
+        dnsRecord({ owner: Buffer.from([0xc0, 0x0c]), type: 16, data: dnsName('example.com') }),
+      ])
+    })).rejects.toThrow('DNS resolver')
   })
 
   it('requires proxy authentication before resolving a destination', async () => {

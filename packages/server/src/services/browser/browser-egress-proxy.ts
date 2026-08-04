@@ -28,7 +28,7 @@ interface DohResponse {
 
 type DohRequest = (input: DohRequestInput) => Promise<DohResponse>
 
-const DOH_RESPONSE_LIMIT_BYTES = 64 * 1024
+const DOH_RESPONSE_LIMIT_BYTES = 65_535
 const DOH_TIMEOUT_MS = 5_000
 const DOH_MAX_CNAME_DEPTH = 16
 
@@ -135,7 +135,7 @@ function readDnsName(message: Uint8Array, start: number): { name: string; nextOf
     if ((length & 0xc0) === 0xc0) {
       if (cursor + 1 >= message.length) throw new Error('Browser DNS resolver returned a malformed response')
       const pointer = ((length & 0x3f) << 8) | message[cursor + 1]
-      if (pointer >= message.length || visited.has(pointer) || jumps >= DOH_MAX_CNAME_DEPTH) {
+      if (pointer >= cursor || pointer >= message.length || visited.has(pointer) || jumps >= DOH_MAX_CNAME_DEPTH) {
         throw new Error('Browser DNS resolver returned a malformed response')
       }
       visited.add(pointer)
@@ -167,7 +167,13 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
   const view = Buffer.from(response)
   if (view.readUInt16BE(0) !== queryView.readUInt16BE(0)) throw new Error('Browser DNS resolver returned a mismatched response')
   const flags = view.readUInt16BE(2)
-  if ((flags & 0x8000) === 0 || (flags & 0x0200) !== 0 || (flags & 0x000f) !== 0) {
+  if (
+    (flags & 0x8000) === 0
+    || (flags & 0x7800) !== 0
+    || (flags & 0x0200) !== 0
+    || (flags & 0x0040) !== 0
+    || (flags & 0x000f) !== 0
+  ) {
     throw new Error('Browser DNS resolver failed')
   }
   if (view.readUInt16BE(4) !== 1) throw new Error('Browser DNS resolver returned a malformed response')
@@ -184,35 +190,52 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
   const cnameByOwner = new Map<string, string>()
   const addressRecords: Array<{ owner: string; address: ResolvedAddress }> = []
   let offset = question.nextOffset + 4
-  const recordCount = view.readUInt16BE(6) + view.readUInt16BE(8) + view.readUInt16BE(10)
-  for (let index = 0; index < recordCount; index += 1) {
-    const owner = readDnsName(response, offset)
-    offset = owner.nextOffset
-    if (offset + 10 > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
-    const type = view.readUInt16BE(offset)
-    const recordClass = view.readUInt16BE(offset + 2)
-    const dataLength = view.readUInt16BE(offset + 8)
-    const dataOffset = offset + 10
-    const dataEnd = dataOffset + dataLength
-    if (dataEnd > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
-    if (recordClass === 1 && type === 5) {
-      const target = readDnsName(response, dataOffset)
-      if (target.nextOffset !== dataEnd || cnameByOwner.has(owner.name)) {
-        throw new Error('Browser DNS resolver returned a malformed response')
+  const sectionCounts = [view.readUInt16BE(6), view.readUInt16BE(8), view.readUInt16BE(10)]
+  let optSeen = false
+  for (let section = 0; section < sectionCounts.length; section += 1) {
+    for (let index = 0; index < sectionCounts[section]; index += 1) {
+      const owner = readDnsName(response, offset)
+      offset = owner.nextOffset
+      if (offset + 10 > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
+      const type = view.readUInt16BE(offset)
+      const recordClass = view.readUInt16BE(offset + 2)
+      const ttl = view.readUInt32BE(offset + 4)
+      const dataLength = view.readUInt16BE(offset + 8)
+      const dataOffset = offset + 10
+      const dataEnd = dataOffset + dataLength
+      if (dataEnd > response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
+
+      if (type === 41) {
+        if (section !== 2 || owner.name !== '.' || optSeen || (ttl >>> 24) !== 0 || ((ttl >>> 16) & 0xff) !== 0) {
+          throw new Error('Browser DNS resolver returned a malformed response')
+        }
+        optSeen = true
+      } else if (recordClass === 1 && type === 5) {
+        const target = readDnsName(response, dataOffset)
+        if (target.nextOffset !== dataEnd) throw new Error('Browser DNS resolver returned a malformed response')
+        if (section === 0) {
+          if (cnameByOwner.has(owner.name)) throw new Error('Browser DNS resolver returned a malformed response')
+          cnameByOwner.set(owner.name, target.name)
+        }
+      } else if (recordClass === 1 && type === 1) {
+        if (dataLength !== 4) throw new Error('Browser DNS resolver returned a malformed response')
+        if (section === 0) {
+          const address = [...response.subarray(dataOffset, dataEnd)].join('.')
+          if (!isPublicBrowserAddress(address)) throw new Error('Private browser destination is not allowed')
+          addressRecords.push({ owner: owner.name, address: { address, family: 4 } })
+        }
+      } else if (recordClass === 1 && type === 28) {
+        if (dataLength !== 16) throw new Error('Browser DNS resolver returned a malformed response')
+        if (section === 0) {
+          const groups: string[] = []
+          for (let cursor = dataOffset; cursor < dataEnd; cursor += 2) groups.push(view.readUInt16BE(cursor).toString(16))
+          const address = groups.join(':')
+          if (!isPublicBrowserAddress(address)) throw new Error('Private browser destination is not allowed')
+          addressRecords.push({ owner: owner.name, address: { address, family: 6 } })
+        }
       }
-      cnameByOwner.set(owner.name, target.name)
-    } else if (recordClass === 1 && type === 1 && dataLength === 4) {
-      const address = [...response.subarray(dataOffset, dataEnd)].join('.')
-      if (!isPublicBrowserAddress(address)) throw new Error('Private browser destination is not allowed')
-      addressRecords.push({ owner: owner.name, address: { address, family: 4 } })
-    } else if (recordClass === 1 && type === 28 && dataLength === 16) {
-      const groups: string[] = []
-      for (let cursor = dataOffset; cursor < dataEnd; cursor += 2) groups.push(view.readUInt16BE(cursor).toString(16))
-      const address = groups.join(':')
-      if (!isPublicBrowserAddress(address)) throw new Error('Private browser destination is not allowed')
-      addressRecords.push({ owner: owner.name, address: { address, family: 6 } })
+      offset = dataEnd
     }
-    offset = dataEnd
   }
   if (offset !== response.byteLength) throw new Error('Browser DNS resolver returned a malformed response')
 
@@ -295,7 +318,7 @@ export function isPublicBrowserAddress(address: string): boolean {
     return ![
       ['::', 96], ['::ffff:0:0', 96], ['100::', 64], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
       ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
-      ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+      ['fc00::', 7], ['fec0::', 10], ['fe80::', 10], ['ff00::', 8],
     ].some(([base, prefix]) => ipv6InCidr(normalized, String(base), Number(prefix)))
   }
   return false
