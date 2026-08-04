@@ -436,6 +436,9 @@ describe('Studio-managed browser egress proxy', () => {
   it.each([
     ['non-query opcode', 0x8980],
     ['reserved Z bit', 0x81c0],
+    ['authenticated-data Z bit', 0x81a0],
+    ['checking-disabled Z bit', 0x8190],
+    ['basic response error code', 0x8183],
   ])('rejects a DNS response with %s', async (_label, flags) => {
     await expect(resolveThroughDoh(query => dnsResponse(query,
       dnsQuestionType(query) === 1 ? [{ type: 1, data: Uint8Array.from([104, 20, 23, 154]) }] : [],

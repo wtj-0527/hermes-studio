@@ -171,7 +171,7 @@ function parseDnsResponse(query: Uint8Array, response: Uint8Array, expectedHostn
     (flags & 0x8000) === 0
     || (flags & 0x7800) !== 0
     || (flags & 0x0200) !== 0
-    || (flags & 0x0040) !== 0
+    || (flags & 0x0070) !== 0
     || (flags & 0x000f) !== 0
   ) {
     throw new Error('Browser DNS resolver failed')
