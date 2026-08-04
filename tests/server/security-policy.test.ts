@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   createCorsOriginResolver,
   isOriginAllowed,
+  parseUpgradeRequestUrl,
   securityHeaders,
   shouldRejectUpgradeOrigin,
 } from '../../packages/server/src/security'
@@ -48,6 +49,14 @@ describe('server security policy', () => {
     expect(shouldRejectUpgradeOrigin({ headers: { origin: 'null', host: '127.0.0.1:8648' } } as any, '')).toBe(true)
     expect(shouldRejectUpgradeOrigin({ headers: { origin: 'http://127.0.0.1:8648', host: '127.0.0.1:8648' } } as any, '')).toBe(false)
     expect(shouldRejectUpgradeOrigin({ headers: { host: '127.0.0.1:8648' } } as any, '')).toBe(false)
+  })
+
+  it('parses upgrade URLs only with a single valid Host authority', () => {
+    expect(parseUpgradeRequestUrl({ url: '/socket?token=ok', headers: { host: 'studio.example:8648' } } as any)?.pathname).toBe('/socket')
+    expect(parseUpgradeRequestUrl({ url: '/socket', headers: {} } as any)).toBeNull()
+    expect(parseUpgradeRequestUrl({ url: '/socket', headers: { host: '' } } as any)).toBeNull()
+    expect(parseUpgradeRequestUrl({ url: '/socket', headers: { host: '%' } } as any)).toBeNull()
+    expect(parseUpgradeRequestUrl({ url: '/socket', headers: { host: 'one.example,two.example' } } as any)).toBeNull()
   })
 
   it('adds baseline browser security headers', async () => {

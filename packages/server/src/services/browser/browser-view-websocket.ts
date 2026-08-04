@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server as HttpServer } from 'http'
 import { WebSocketServer, type RawData } from 'ws'
+import { parseUpgradeRequestUrl } from '../../security'
 import type { ManagedBrowserService } from './managed-browser-service'
 
 const VIEW_SOCKET = /^\/api\/browser\/view\/([A-Za-z0-9_-]{20,200})\/socket$/
@@ -62,12 +63,8 @@ export function setupBrowserViewWebSocket(
 
   for (const httpServer of servers) {
     httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
-      let url: URL
-      try {
-        const host = request.headers.host
-        if (typeof host !== 'string' || !host.trim() || host.includes(',')) throw new Error('Invalid WebSocket Host')
-        url = new URL(request.url || '', `http://${host.trim()}`)
-      } catch {
+      const url = parseUpgradeRequestUrl(request)
+      if (!url) {
         socket.destroy()
         return
       }

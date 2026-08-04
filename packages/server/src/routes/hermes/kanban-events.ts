@@ -5,7 +5,7 @@ import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth
 import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { logger } from '../../services/logger'
 import { config } from '../../config'
-import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
+import { parseUpgradeRequestUrl, shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
 import * as kanbanCli from '../../services/hermes/hermes-kanban'
 
 interface KanbanEventsRequest extends IncomingMessage {
@@ -36,7 +36,11 @@ export function setupKanbanEventsWebSocket(httpServers: HttpServer | HttpServer[
 
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', async (req: KanbanEventsRequest, socket, head) => {
-      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      const url = parseUpgradeRequestUrl(req)
+      if (!url) {
+        socket.destroy()
+        return
+      }
       if (url.pathname !== '/api/hermes/kanban/events') return
 
       if (shouldRejectUpgradeOrigin(req, config.corsOrigins)) {

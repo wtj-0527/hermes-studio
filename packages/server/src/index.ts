@@ -32,7 +32,7 @@ import { logger } from './services/logger'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { getStaticCacheControl, SPA_ENTRY_CACHE_CONTROL } from './middleware/static-cache'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
-import { createCorsOriginResolver, securityHeaders } from './security'
+import { createCorsOriginResolver, parseUpgradeRequestUrl, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
 import { createRequestBodyParser } from './middleware/request-body-parser'
 import { setupBrowserViewWebSocket, isBrowserViewSocketPath } from './services/browser/browser-view-websocket'
@@ -375,7 +375,11 @@ export async function bootstrap() {
   // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
   servers.forEach((httpServer) => {
     httpServer.on('upgrade', (req: any, socket: any) => {
-      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      const url = parseUpgradeRequestUrl(req)
+      if (!url) {
+        socket.destroy()
+        return
+      }
       if (url.pathname !== '/api/hermes/terminal' &&
         url.pathname !== '/api/hermes/kanban/events' &&
         !isBrowserViewSocketPath(url.pathname) &&

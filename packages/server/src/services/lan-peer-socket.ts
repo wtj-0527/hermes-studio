@@ -13,7 +13,7 @@ import { getTerminalConfig, validatePath } from './hermes/file-provider'
 import { getActiveProfileDir } from './hermes/hermes-profile'
 import { logger } from './logger'
 import { config } from '../config'
-import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../security'
+import { parseUpgradeRequestUrl, shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../security'
 
 const PEER_SOCKET_PATH = '/api/devices/peer-socket'
 const REQUEST_TTL_MS = 5 * 60 * 1000
@@ -901,7 +901,11 @@ export class LanPeerSocketManager {
 
     servers.forEach(httpServer => {
       httpServer.on('upgrade', async (req, socket, head) => {
-        const url = new URL(req.url || '', `http://${req.headers.host}`)
+        const url = parseUpgradeRequestUrl(req)
+        if (!url) {
+          socket.destroy()
+          return
+        }
         if (url.pathname !== PEER_SOCKET_PATH) return
 
         if (shouldRejectUpgradeOrigin(req, config.corsOrigins)) {
