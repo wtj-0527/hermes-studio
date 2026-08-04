@@ -708,7 +708,13 @@ describe('HttpBrowserRuntimeAdapter', () => {
 
     expect(view).toBeDefined()
     expect(viewSession.send).toHaveBeenNthCalledWith(1, 'Page.enable')
-    expect(viewSession.send).toHaveBeenNthCalledWith(2, 'Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1 })
+    expect(viewSession.send).toHaveBeenNthCalledWith(2, 'Page.startScreencast', {
+      format: 'jpeg',
+      quality: 70,
+      maxWidth: 1280,
+      maxHeight: 720,
+      everyNthFrame: 1,
+    })
     screencastFrame?.({ data: 'jpeg-base64', sessionId: 42, metadata: { deviceWidth: 1280, deviceHeight: 720 } })
     await vi.waitFor(() => expect(viewSession.send).toHaveBeenCalledWith('Page.screencastFrameAck', { sessionId: 42 }))
     expect(frames).toEqual([{ data: 'jpeg-base64', metadata: { deviceWidth: 1280, deviceHeight: 720 } }])

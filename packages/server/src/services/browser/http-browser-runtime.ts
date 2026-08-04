@@ -574,7 +574,13 @@ class ManagedHttpRuntimeSession implements BrowserRuntimeSession {
     cdp.on('Page.screencastFrame', frameListener)
     try {
       await session.send('Page.enable')
-      await session.send('Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1 })
+      await session.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 70,
+        maxWidth: 1280,
+        maxHeight: 720,
+        everyNthFrame: 1,
+      })
     } catch (error) {
       cdp.off?.('Page.screencastFrame', frameListener)
       await session.detach().catch(() => undefined)
