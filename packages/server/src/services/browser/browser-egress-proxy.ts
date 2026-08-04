@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises'
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
 import { connect as tcpConnect } from 'node:net'
+import type { Duplex } from 'node:stream'
 
 interface ResolvedAddress {
   address: string
@@ -90,6 +91,39 @@ function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left)
   const b = Buffer.from(right)
   return a.length === b.length && timingSafeEqual(a, b)
+}
+
+export function createConnectTunnel(client: Duplex, upstream: Duplex, head: Buffer = Buffer.alloc(0)): { start(): void } {
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    client.unpipe(upstream)
+    upstream.unpipe(client)
+    client.destroy()
+    upstream.destroy()
+  }
+  client.once('error', close)
+  client.once('close', close)
+  upstream.once('error', close)
+  upstream.once('close', close)
+  if (client.destroyed || upstream.destroyed) close()
+  return {
+    start() {
+      if (closed || client.destroyed || upstream.destroyed) {
+        close()
+        return
+      }
+      try {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+        if (head.length) upstream.write(head)
+        upstream.pipe(client)
+        client.pipe(upstream)
+      } catch {
+        close()
+      }
+    },
+  }
 }
 
 export class BrowserEgressProxy {
@@ -201,20 +235,26 @@ export class BrowserEgressProxy {
       socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="Hermes Browser"\r\n\r\n')
       return
     }
+    let clientGone = socket.destroyed === true
+    const closeClient = () => {
+      clientGone = true
+      socket.destroy()
+    }
+    socket.once('error', closeClient)
+    socket.once('close', closeClient)
     try {
       const target = new URL(`https://${request.url || ''}`)
       const destination = await this.resolvePublic(target.hostname)
+      if (clientGone || socket.destroyed) return
       const upstream = tcpConnect({ host: destination.address, family: destination.family, port: target.port ? Number(target.port) : 443 })
+      const tunnel = createConnectTunnel(socket, upstream, head)
+      socket.off('error', closeClient)
+      socket.off('close', closeClient)
       upstream.setTimeout(30_000, () => upstream.destroy())
-      upstream.once('connect', () => {
-        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-        if (head.length) upstream.write(head)
-        upstream.pipe(socket)
-        socket.pipe(upstream)
-      })
+      upstream.once('connect', () => tunnel.start())
       upstream.once('error', () => socket.destroy())
     } catch {
-      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
+      if (!clientGone && !socket.destroyed) socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
     }
   }
 }

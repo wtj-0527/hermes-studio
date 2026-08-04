@@ -1,7 +1,8 @@
 import { request } from 'node:http'
 import { connect } from 'node:net'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BrowserEgressProxy, isPublicBrowserAddress } from '../../packages/server/src/services/browser/browser-egress-proxy'
+import { BrowserEgressProxy, createConnectTunnel, isPublicBrowserAddress } from '../../packages/server/src/services/browser/browser-egress-proxy'
 
 const proxies: BrowserEgressProxy[] = []
 
@@ -53,6 +54,76 @@ async function proxyConnect(proxyUrl: string, authority: string): Promise<string
 }
 
 describe('Studio-managed browser egress proxy', () => {
+  it('contains a CONNECT client reset while destination DNS is still pending', async () => {
+    let lookupStartedResolve!: () => void
+    const lookupStarted = new Promise<void>(resolve => { lookupStartedResolve = resolve })
+    let lookupResolve!: (addresses: Array<{ address: string; family: number }>) => void
+    const lookupPending = new Promise<Array<{ address: string; family: number }>>(resolve => { lookupResolve = resolve })
+    const proxy = new BrowserEgressProxy({
+      lookupAll: async () => {
+        lookupStartedResolve()
+        return await lookupPending
+      },
+    })
+    proxies.push(proxy)
+    const proxyUrl = new URL(await proxy.start())
+    const authorization = Buffer.from(`${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`).toString('base64')
+    const client = new PassThrough()
+    const handling = (proxy as unknown as {
+      handleConnect(request: { url: string; headers: Record<string, string> }, socket: PassThrough, head: Buffer): Promise<void>
+    }).handleConnect({
+      url: 'example.test:443',
+      headers: { 'proxy-authorization': `Basic ${authorization}` },
+    }, client, Buffer.alloc(0))
+    await lookupStarted
+
+    try {
+      expect(() => client.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))).not.toThrow()
+    } finally {
+      lookupResolve([{ address: '1.1.1.1', family: 4 }])
+      await handling
+    }
+
+    expect(client.destroyed).toBe(true)
+  })
+
+  it('closes the upstream immediately when the CONNECT client already disappeared', async () => {
+    const client = new PassThrough()
+    const upstream = new PassThrough()
+    client.destroy()
+    await new Promise(resolve => setImmediate(resolve))
+
+    createConnectTunnel(client, upstream)
+
+    expect(upstream.destroyed).toBe(true)
+  })
+
+  it('contains a client-side EPIPE and closes both CONNECT tunnel directions', async () => {
+    const client = new PassThrough()
+    const upstream = new PassThrough()
+    const tunnel = createConnectTunnel(client, upstream)
+    tunnel.start()
+
+    client.destroy(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(client.destroyed).toBe(true)
+    expect(upstream.destroyed).toBe(true)
+  })
+
+  it('closes the client when the CONNECT upstream fails', async () => {
+    const client = new PassThrough()
+    const upstream = new PassThrough()
+    const tunnel = createConnectTunnel(client, upstream)
+    tunnel.start()
+
+    upstream.destroy(new Error('upstream reset'))
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(client.destroyed).toBe(true)
+    expect(upstream.destroyed).toBe(true)
+  })
+
   it.each([
     '127.0.0.1', '10.0.0.1', '100.64.0.1', '169.254.169.254',
     '172.16.0.1', '192.168.0.1', '0.0.0.0', '224.0.0.1',
