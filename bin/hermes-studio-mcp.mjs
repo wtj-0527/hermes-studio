@@ -660,6 +660,11 @@ function pickDefined(source, keys) {
   return picked
 }
 
+function currentMobileSessionArgs(args) {
+  const sessionId = String(process.env.HERMES_STUDIO_SESSION_ID || '').trim()
+  return sessionId ? { ...args, session_id: sessionId } : args
+}
+
 function boundedInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10)
   if (!Number.isFinite(parsed)) return fallback
@@ -1964,19 +1969,19 @@ async function callTool(name, args = {}) {
         body: pickDefined(args, ['session_id', 'purpose', 'accuracy', 'timeout_ms']),
       })))
     case 'hermes_studio_use_mobile_calendar':
-      return jsonText(await request('/api/studio/mobile-calendar/request', withAuthArgs(args, {
+      return jsonText(await request('/api/studio/mobile-calendar/request', withAuthArgs(currentMobileSessionArgs(args), {
         method: 'POST',
         body: {
           capability: 'calendar',
-          ...pickDefined(args, ['session_id', 'action', 'purpose', 'start_ms', 'end_ms', 'limit', 'item', 'timeout_ms']),
+          ...pickDefined(currentMobileSessionArgs(args), ['session_id', 'action', 'purpose', 'start_ms', 'end_ms', 'limit', 'item', 'timeout_ms']),
         },
       })))
     case 'hermes_studio_use_mobile_reminders':
-      return jsonText(await request('/api/studio/mobile-calendar/request', withAuthArgs(args, {
+      return jsonText(await request('/api/studio/mobile-calendar/request', withAuthArgs(currentMobileSessionArgs(args), {
         method: 'POST',
         body: {
           capability: 'reminder',
-          ...pickDefined(args, ['session_id', 'action', 'purpose', 'start_ms', 'end_ms', 'include_completed', 'limit', 'item', 'timeout_ms']),
+          ...pickDefined(currentMobileSessionArgs(args), ['session_id', 'action', 'purpose', 'start_ms', 'end_ms', 'include_completed', 'limit', 'item', 'timeout_ms']),
         },
       })))
     case 'hermes_studio_use_workflows_list':
