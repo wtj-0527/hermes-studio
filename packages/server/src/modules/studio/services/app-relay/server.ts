@@ -56,6 +56,8 @@ const ALLOWED_CHAT_RUN_CLIENT_EVENTS = new Set([
   'approval.respond',
   'clarify.respond',
   'location.respond',
+  'calendar.respond',
+  'reminder.respond',
 ])
 const ALLOWED_GROUP_CHAT_CLIENT_EVENTS = new Set([
   'join',
